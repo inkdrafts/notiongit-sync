@@ -1,0 +1,15 @@
+{
+  "name": "notiongit-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Syncs published pages and posts from two Notion databases into a Jekyll site (_pages/, _posts/, _data/, _config.yml identity)",
+  "scripts": {
+    "sync": "node scripts/sync-notion.js"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
