@@ -6,7 +6,7 @@ packaged to be consumed by generated sites as a reusable GitHub Action
 writes the Jekyll files a GitHub Pages site needs. Nothing else: no telemetry, no
 network calls beyond the Notion API, no site content of its own.
 
-> **Status:** this repository currently contains the engine as plain Node source —
+> **Status:** this repository currently contains the engine as plain CommonJS source —
 > a faithful import of the production script. The GitHub Action wrapper
 > (`action.yml`) lands in issue #2; dependency bundling in #3; the `v1` release
 > tag in #7.
@@ -27,8 +27,9 @@ changes, no bug fixes. Every later behavior change should be visible as a focuse
 diff against this baseline.
 
 `package.json` is recreated minimally (the engine's only dependency is
-`@notionhq/client`; the Node engine range and the `sync` script are preserved from
-the source repository's package metadata).
+`@notionhq/client`; the `sync` script entry is preserved, now invoked with `bun`
+— this project runs on [Bun](https://bun.sh) rather than npm/Node, so the source
+repository's Node engine range is replaced by `engines.bun`).
 
 ## How it works
 
@@ -53,7 +54,11 @@ Notion Posts DB  ─┘                             ─→  _pages/{slug}.md, _p
 
 ### Runtime expectations
 
-Node ≥ 18 (GitHub-hosted runners use Node 20). The script resolves the Jekyll site
+[Bun](https://bun.sh) ≥ 1.1 is this project's runtime and package manager — plain
+CommonJS with no Node- or Bun-specific APIs, so the script runs unmodified
+(`bun scripts/sync-notion.js`; GitHub-hosted runners get Bun via
+[`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) when the Action
+wrapper lands in #2). The script resolves the Jekyll site
 root as the parent of `scripts/` (`path.resolve(__dirname, '..')`), so it is
 designed to run inside a consumer's Jekyll site checkout — in this repository it is
 engine source, not a runnable site.
@@ -172,8 +177,8 @@ bulk-delete guard tripped. The caller (the site's workflow) decides what to comm
 ## Usage
 
 ```bash
-npm install
-NOTION_TOKEN=secret NOTION_PAGES_DATABASE_ID=… NOTION_POSTS_DATABASE_ID=… npm run sync
+bun install
+NOTION_TOKEN=secret NOTION_PAGES_DATABASE_ID=… NOTION_POSTS_DATABASE_ID=… bun run sync
 ```
 
 ## License
