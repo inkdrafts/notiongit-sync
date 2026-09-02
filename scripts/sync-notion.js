@@ -27,7 +27,12 @@
  *                                production.
  *
  * At least one of NOTION_PAGES_DATABASE_ID or NOTION_POSTS_DATABASE_ID
- * (/ NOTION_DATABASE_ID) must be set.
+ * (/ NOTION_DATABASE_ID) must be set. NOTION_TOKEN, and database id values,
+ * are trimmed before checking, so whitespace-only counts as unset.
+ *
+ * Missing or blank credentials are not a failure: the run exits 0 with
+ * changed=false and a safe summary naming the missing configuration key,
+ * so a scheduled run that lands before secrets are provisioned stays green.
  *
  * Action outputs — when GITHUB_OUTPUT is set (i.e. under the Action wrapper),
  * the run appends two non-secret outputs for the consumer workflow:
@@ -64,13 +69,14 @@ function isTrue(value) {
  * exited 1 on) when NOTION_TOKEN is missing or no database ID is set.
  */
 function resolveConfig(env = process.env) {
-  const notionToken = env.NOTION_TOKEN;
+  const notionToken = String(env.NOTION_TOKEN ?? '').trim();
   if (!notionToken) {
     throw new ConfigError('NOTION_TOKEN environment variable is not set.');
   }
 
-  const pagesDbId = env.NOTION_PAGES_DATABASE_ID || '';
-  const postsDbId = env.NOTION_POSTS_DATABASE_ID || env.NOTION_DATABASE_ID || '';
+  const pagesDbId = String(env.NOTION_PAGES_DATABASE_ID ?? '').trim();
+  const postsDbId = String(env.NOTION_POSTS_DATABASE_ID ?? '').trim() ||
+                     String(env.NOTION_DATABASE_ID ?? '').trim();
   if (!pagesDbId && !postsDbId) {
     throw new ConfigError('Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.');
   }
@@ -953,8 +959,21 @@ async function main() {
   try {
     config = resolveConfig();
   } catch (err) {
-    console.error(`Error: ${err.message}`);
-    process.exit(1);
+    // Only a recognized missing-credentials shape is a no-op; anything else
+    // resolveConfig might throw is a real defect and must still fail loudly.
+    if (!(err instanceof ConfigError)) throw err;
+
+    // No usable Notion credentials yet — most commonly a freshly generated
+    // repository whose provisioning hasn't written secrets before its first
+    // scheduled run. That is not a failure: exit 0 with an explicit no-op
+    // rather than a red run, so scheduling ahead of provisioning is safe.
+    console.log(`Notion sync skipped: ${err.message}`);
+    console.log(
+      'Configure NOTION_TOKEN and at least one of NOTION_PAGES_DATABASE_ID / ' +
+      'NOTION_POSTS_DATABASE_ID (repository secrets/variables), then re-run this workflow.'
+    );
+    writeActionOutputs({ changed: false, summary: `skipped: ${err.message}` });
+    return;
   }
 
   let sections;

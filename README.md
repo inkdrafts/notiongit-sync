@@ -82,7 +82,7 @@ stale; never hand-edit anything under `dist/`.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `NOTION_TOKEN` | **Yes** | Notion integration secret. Missing → exit 1 before any I/O. |
+| `NOTION_TOKEN` | **Yes** | Notion integration secret. Missing or whitespace-only → clean no-op (exit 0), before any I/O. |
 | `NOTION_PAGES_DATABASE_ID` | One of the two DB IDs | ID of the Pages database (below). Unset → pages sync skipped. |
 | `NOTION_POSTS_DATABASE_ID` | One of the two DB IDs | ID of the Posts database (below). Unset → posts sync skipped. |
 | `NOTION_DATABASE_ID` | No | Legacy fallback for the posts database; used only when `NOTION_POSTS_DATABASE_ID` is unset. |
@@ -93,8 +93,12 @@ stale; never hand-edit anything under `dist/`.
 | `GITHUB_OUTPUT` | No | Set by the runner when the engine runs as an Action step; the engine appends the `changed` / `summary` outputs (below) to it. |
 
 At least one of `NOTION_PAGES_DATABASE_ID` / `NOTION_POSTS_DATABASE_ID` (or the
-legacy `NOTION_DATABASE_ID`) must be set alongside `NOTION_TOKEN`, otherwise the
-script exits 1 without querying anything.
+legacy `NOTION_DATABASE_ID`) must be set alongside `NOTION_TOKEN`. If neither
+credential is usable (absent, empty, or whitespace-only), the script does not
+query anything or touch the filesystem — it exits 0 with `changed=false` and a
+summary naming the missing key, so a scheduled run that lands before secrets
+are provisioned stays green instead of failing loudly. See
+[Clean no-op on missing credentials](#clean-no-op-on-missing-credentials).
 
 ## Notion database schemas
 
@@ -186,11 +190,24 @@ A single deletion is allowed — unless the run returned zero published rows, wh
 trips the guard however few files are stale. Push a genuine mass unpublish through
 with `ALLOW_BULK_DELETE=true`.
 
+### Clean no-op on missing credentials
+
+A newly generated repository can receive its first scheduled run before
+provisioning has written `NOTION_TOKEN` / the database ID(s) — that must not
+look like a broken Action to a non-developer. So when `NOTION_TOKEN` is
+missing, or neither database ID is set (absent, empty, or whitespace-only in
+either case), the engine exits 0 with `changed=false` and a one-line summary
+naming the missing configuration key (e.g. `skipped: NOTION_TOKEN environment
+variable is not set.`) — before constructing the Notion client or touching any
+generated file. It never reveals which secret value was present, only the name
+of what's missing.
+
 ### Exit codes
 
-`0` — clean sync (possibly all-unchanged). `1` — missing `NOTION_TOKEN`, no
-database IDs, a database query failed, any per-row error occurred, or the
-bulk-delete guard tripped. The caller (the site's workflow) decides what to commit.
+`0` — clean sync (possibly all-unchanged), or a no-op skip when Notion
+credentials aren't configured yet (above). `1` — a database query failed, any
+per-row error occurred, or the bulk-delete guard tripped. The caller (the
+site's workflow) decides what to commit.
 
 ## Usage as a GitHub Action
 

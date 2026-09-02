@@ -70,6 +70,39 @@ describe('resolveConfig (environment → config mapping)', () => {
     });
   });
 
+  it('treats a whitespace-only token as not set', () => {
+    expect(() => engine.resolveConfig({ NOTION_TOKEN: '   ' }))
+      .toThrow('NOTION_TOKEN environment variable is not set.');
+  });
+
+  it('treats whitespace-only database ids as not set', () => {
+    expect(() => engine.resolveConfig({
+      NOTION_TOKEN: 't',
+      NOTION_PAGES_DATABASE_ID: '   ',
+      NOTION_POSTS_DATABASE_ID: '\t\n',
+    })).toThrow('Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.');
+  });
+
+  it('trims a valid token and database id', () => {
+    const config = engine.resolveConfig({
+      NOTION_TOKEN: '  secret-token  ',
+      NOTION_POSTS_DATABASE_ID: '  posts-db  ',
+    });
+    expect(config.notionToken).toBe('secret-token');
+    expect(config.postsDbId).toBe('posts-db');
+  });
+
+  it('accepts a whitespace-padded legacy posts-only configuration as valid', () => {
+    const config = engine.resolveConfig({
+      NOTION_TOKEN: 't',
+      NOTION_PAGES_DATABASE_ID: '',
+      NOTION_POSTS_DATABASE_ID: '  ',
+      NOTION_DATABASE_ID: '  legacy-db  ',
+    });
+    expect(config.pagesDbId).toBe('');
+    expect(config.postsDbId).toBe('legacy-db');
+  });
+
   it('falls back to the legacy NOTION_DATABASE_ID for posts', () => {
     const legacy = engine.resolveConfig({
       NOTION_TOKEN: 't',
