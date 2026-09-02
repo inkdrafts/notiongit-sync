@@ -8,8 +8,9 @@ network calls beyond the Notion API, no site content of its own.
 
 > **Status:** the repository contains the engine as plain CommonJS source (the
 > imported production script, plus the input/output plumbing the Action wrapper
-> needs), the `action.yml` composite wrapper, and a committed `dist/` bundle so
-> consumers never run `bun install`. The `v1` release tag lands in #7.
+> needs), the `action.yml` composite wrapper, a committed `dist/` bundle so
+> consumers never run `bun install`, and the release process that publishes
+> `vX.Y.Z` tags and moves `v1` — see [Releasing](#releasing) below.
 
 ## Import provenance
 
@@ -300,6 +301,15 @@ emission, the bulk-delete guard and the legacy posts-only fallback end to end,
 with no network access and no real workspace data. `test/dist.test.js` runs
 the same kind of check directly against the committed `dist/index.js` bundle,
 so a stale or miscompiled bundle fails tests even if `git diff` were skipped.
+
+## Releasing
+
+Generated sites pin `uses: inkdrafts/notiongit-sync@v1` — a moving alias that
+always points at the latest `1.x.y` tag, while every full `vX.Y.Z` tag is
+immutable once published. See [`RELEASING.md`](RELEASING.md) for the
+compatibility promise (what's patch/minor/major), the release workflow, and
+rollback instructions, and [`CHANGELOG.md`](CHANGELOG.md) for what shipped in
+each version.
 
 ## License
 
