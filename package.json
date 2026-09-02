@@ -5,6 +5,7 @@
   "description": "Syncs published pages and posts from two Notion databases into a Jekyll site (_pages/, _posts/, _data/, _config.yml identity)",
   "scripts": {
     "sync": "bun scripts/sync-notion.js",
+    "build": "bun build ./scripts/sync-notion.js --outfile dist/index.js --target bun",
     "test": "bun test"
   },
   "dependencies": {

@@ -66,9 +66,9 @@ describe('action.yml outputs', () => {
 });
 
 describe('action.yml steps', () => {
-  const [setup, install, sync, ...extra] = action.runs.steps;
+  const [setup, sync, ...extra] = action.runs.steps;
 
-  it('has exactly three steps', () => {
+  it('has exactly two steps (no install step — the bundle needs no dependencies)', () => {
     expect(extra).toEqual([]);
   });
 
@@ -76,21 +76,14 @@ describe('action.yml steps', () => {
     expect(setup.uses).toBe('oven-sh/setup-bun@v2');
   });
 
-  it('installs dependencies with a frozen lockfile inside the action checkout', () => {
-    expect(install.run).toBe('bun install --frozen-lockfile');
-    expect(install.shell).toBe('bash');
-    expect(install['working-directory']).toBe('${{ github.action_path }}');
-  });
-
-  it('runs the existing engine entry point with Bun under a step id', () => {
+  it('runs the committed dist bundle with Bun under a step id', () => {
     expect(sync.id).toBe('sync');
-    expect(sync.run).toBe('bun scripts/sync-notion.js');
+    expect(sync.run).toBe('bun dist/index.js');
     expect(sync.shell).toBe('bash');
     expect(sync['working-directory']).toBe('${{ github.action_path }}');
-    // The referenced entry point must actually exist.
-    expect(existsSync(path.join(REPO_ROOT, 'scripts', 'sync-notion.js'))).toBe(true);
-    // A frozen-lockfile install requires the lockfile to be committed.
-    expect(existsSync(path.join(REPO_ROOT, 'bun.lock'))).toBe(true);
+    // The referenced entry point must actually exist — this is the whole
+    // point of the bundle: no install step resolves it at runtime.
+    expect(existsSync(path.join(REPO_ROOT, 'dist', 'index.js'))).toBe(true);
   });
 
   it('maps every input into the engine environment', () => {
@@ -108,7 +101,6 @@ describe('action.yml steps', () => {
     // failure/skip behavior (continue-on-error, if, timeout-minutes, ...) fails
     // this test instead of shipping unnoticed.
     expect(Object.keys(setup).sort()).toEqual(['name', 'uses']);
-    expect(Object.keys(install).sort()).toEqual(['name', 'run', 'shell', 'working-directory']);
     expect(Object.keys(sync).sort()).toEqual(
       ['env', 'id', 'name', 'run', 'shell', 'working-directory']
     );
