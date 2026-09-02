@@ -1010,7 +1010,6 @@ var require_src = __commonJS(function(exports) {
 
 // scripts/sync-notion.js
 var require_sync_notion = __commonJS(function(exports, module) {
-  var __dirname = "/home/leandro_driguez/github/notiongit-sync/.claude/worktrees/bundle-dist-issue3/scripts";
   var { Client } = require_src();
   var fs = __require("fs");
   var path = __require("path");
@@ -1036,7 +1035,7 @@ var require_sync_notion = __commonJS(function(exports, module) {
       postsDbId,
       allowBulkDelete: isTrue(env.ALLOW_BULK_DELETE),
       maxDeleteRatio: Number(env.MAX_DELETE_RATIO) || 0.5,
-      siteRoot: env.SITE_ROOT || path.join(__dirname, ".."),
+      siteRoot: env.SITE_ROOT || path.join(import.meta.dir, ".."),
       notionBaseUrl: env.NOTION_BASE_URL || ""
     };
   }
