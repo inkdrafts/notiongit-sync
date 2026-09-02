@@ -1009,13 +1009,24 @@ if (require.main === module) {
   });
 }
 
-// Exposed for tests: input mapping/normalization, output emission and result
-// folding — all pure or env-driven. The sync itself is exercised end-to-end by
-// the harness in test/ against a local fake Notion API.
+// Exposed for tests: input mapping/normalization, output emission, result
+// folding, and the pure Notion → Markdown/front-matter conversion functions —
+// all pure or env-driven, none touching the network or the filesystem. The
+// full sync (including pagination, which lives in the fetch helpers that
+// close over the module-level Notion client) is exercised end-to-end by the
+// harness in test/ against a local fake Notion API.
 module.exports = {
   ConfigError,
   isTrue,
   resolveConfig,
   buildActionResult,
   writeActionOutputs,
+  richTextToMarkdown,
+  blockToMarkdown,
+  blocksToMarkdown,
+  titleToSlug,
+  typeToLayout,
+  buildPageFrontMatter,
+  buildPostFrontMatter,
+  postFilename,
 };

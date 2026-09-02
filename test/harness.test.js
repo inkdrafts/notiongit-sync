@@ -27,6 +27,7 @@ const LEGACY_POSTS_DB = 'cccccccc-3333-4333-8333-cccccccccccc';
 const HOME_ID  = 'dddddddd-4444-4444-8444-dddddddddddd';
 const ABOUT_ID = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const POST_ID  = 'ffffffff-6666-4666-8666-ffffffffffff';
+const PAGINATED_ID = '99999999-1111-4111-8111-999999999999';
 
 // ─── Fake Notion fixtures ─────────────────────────────────────────────────────
 
@@ -60,6 +61,13 @@ const aboutRow = (slug = 'about') =>
     'Nav Order': { number: 2 },
   });
 
+const paginatedRow = (slug = 'paginated') =>
+  row(PAGINATED_ID, {
+    Title: titleProp('Paginated'),
+    Slug: textProp(slug),
+    Type: { select: { name: 'markdown' } },
+  });
+
 const postRow = () =>
   row(POST_ID, {
     Title: titleProp('Hello World'),
@@ -87,6 +95,26 @@ function resetFixtures() {
 
 // ─── Fake Notion server ───────────────────────────────────────────────────────
 
+// Deliberately small: forces the fake server to answer every multi-row/
+// multi-block fixture across several has_more:true pages instead of ever
+// returning everything in one response, exercising fetchPublished's and
+// fetchAllBlocks's start_cursor loop the way the real Notion API would for
+// any database or block list past a handful of rows. Transparent to every
+// existing scenario below — fetchPublished/fetchAllBlocks aggregate all pages
+// before returning, so the final result is identical regardless of page size.
+const PAGE_SIZE = 1;
+
+/** Slice `items` into one Notion-shaped paginated response. */
+function paginate(items, cursor) {
+  const start = cursor ? Number(cursor) : 0;
+  const end   = Math.min(start + PAGE_SIZE, items.length);
+  return {
+    results:     items.slice(start, end),
+    has_more:    end < items.length,
+    next_cursor: end < items.length ? String(end) : null,
+  };
+}
+
 let server;
 
 beforeAll(() => {
@@ -100,17 +128,16 @@ beforeAll(() => {
         const rows = dbQuery[1] === PAGES_DB ? state.pages
                    : dbQuery[1] === POSTS_DB || dbQuery[1] === LEGACY_POSTS_DB ? state.posts
                    : [];
-        return Response.json({ object: 'list', results: rows, has_more: false, next_cursor: null });
+        const body = await req.json().catch(() => ({}));
+        const page = paginate(rows, body.start_cursor);
+        return Response.json({ object: 'list', ...page });
       }
 
       const blockChildren = url.pathname.match(/^\/v1\/blocks\/([^/]+)\/children$/);
       if (blockChildren && req.method === 'GET') {
-        return Response.json({
-          object: 'list',
-          results: state.blocks[blockChildren[1]] ?? [],
-          has_more: false,
-          next_cursor: null,
-        });
+        const items = state.blocks[blockChildren[1]] ?? [];
+        const page  = paginate(items, url.searchParams.get('start_cursor'));
+        return Response.json({ object: 'list', ...page });
       }
 
       return new Response('harness: not found', { status: 404 });
@@ -427,6 +454,34 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(outputs.changed).toBe('true');
     expect(outputs.summary).toContain('posts: 1 created');
     expect(outputs.summary).not.toContain('pages:');
+  });
+
+  it('follows Notion pagination (has_more/next_cursor) across multiple pages of both database rows and block children', async () => {
+    // The fake server answers one row/block per response (PAGE_SIZE = 1
+    // above), so this scenario only comes out complete if fetchPublished and
+    // fetchAllBlocks correctly follow start_cursor across several pages
+    // rather than trusting the first response.
+    const pagSite = makeSite();
+    const pagOut  = makeOutputFile();
+
+    state.pages = [aboutRow(), paginatedRow()]; // 2 published rows → 2 query pages
+    state.blocks[PAGINATED_ID] = [
+      paragraph('Block one.'),
+      paragraph('Block two.'),
+      paragraph('Block three.'),
+    ]; // 3 blocks → 3 block-children pages
+
+    const { result, outputs } = await outputsOf(baseEnv(pagSite), pagOut);
+    expect(result.exitCode).toBe(0);
+
+    expect(existsSync(path.join(pagSite, '_pages', 'about.md'))).toBe(true);
+    const paginated = readFileSync(path.join(pagSite, '_pages', 'paginated.md'), 'utf8');
+    expect(paginated).toContain('Block one.\n\nBlock two.\n\nBlock three.');
+
+    expect(outputs.summary).toContain('pages: 2 created');
+
+    state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
+    delete state.blocks[PAGINATED_ID];
   });
 
   it('runs the engine the way local development always has (no GITHUB_OUTPUT)', async () => {

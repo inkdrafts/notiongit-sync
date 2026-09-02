@@ -297,10 +297,14 @@ The harness (`test/harness.test.js`) runs the engine as a real subprocess
 against a fake Notion API served on `localhost` (`NOTION_BASE_URL`) and a
 throwaway site (`SITE_ROOT`), with exactly the environment the `action.yml`
 step sets — proving input mapping, boolean normalization, `$GITHUB_OUTPUT`
-emission, the bulk-delete guard and the legacy posts-only fallback end to end,
-with no network access and no real workspace data. `test/dist.test.js` runs
-the same kind of check directly against the committed `dist/index.js` bundle,
-so a stale or miscompiled bundle fails tests even if `git diff` were skipped.
+emission, the bulk-delete guard, Notion's `has_more`/`next_cursor` pagination,
+and the legacy posts-only fallback end to end, with no network access and no
+real workspace data. `test/conversion.test.js` unit-tests the pure Notion →
+Markdown/front-matter conversion logic (rich text, every block type, list
+grouping, slugging) directly, with no subprocess or fake server needed.
+`test/dist.test.js` runs the same kind of check directly against the
+committed `dist/index.js` bundle, so a stale or miscompiled bundle fails tests
+even if `git diff` were skipped.
 
 ## Releasing
 
