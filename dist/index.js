@@ -1755,7 +1755,15 @@ Fatal: ${err.message}`);
     isTrue,
     resolveConfig,
     buildActionResult,
-    writeActionOutputs
+    writeActionOutputs,
+    richTextToMarkdown,
+    blockToMarkdown,
+    blocksToMarkdown,
+    titleToSlug,
+    typeToLayout,
+    buildPageFrontMatter,
+    buildPostFrontMatter,
+    postFilename
   };
 });
 export default require_sync_notion();
