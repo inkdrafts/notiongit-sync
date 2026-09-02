@@ -24,8 +24,21 @@ describe('release.yml trigger', () => {
     expect(inputs.dry_run.default).toBe(true);
   });
 
-  it('can write repo contents (to push tags and publish a release)', () => {
-    expect(workflow.permissions.contents).toBe('write');
+  it('defaults to read-only, granting write only to the job that tags/publishes', () => {
+    expect(workflow.permissions.contents).toBe('read');
+    expect(workflow.jobs.release.permissions.contents).toBe('write');
+    expect(workflow.jobs.verify.permissions).toBeUndefined();
+    expect(workflow.jobs['validate-inputs'].permissions).toBeUndefined();
+  });
+
+  it('never splices github.ref or github.token directly into a run: script', () => {
+    for (const job of Object.values(workflow.jobs)) {
+      for (const step of job.steps ?? []) {
+        const run = step.run ?? '';
+        expect(run).not.toContain('${{ github.ref }}');
+        expect(run).not.toContain('${{ github.token }}');
+      }
+    }
   });
 });
 

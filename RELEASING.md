@@ -76,21 +76,31 @@ to change in a generated site's repository.
 
 ## Tag protection
 
-Full-version tags must never be recreated or moved once published. Configure
-a [tag protection rule](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-tag-protection-rules)
-in this repository's Settings → Tags (or via the API below) with the pattern:
+Full-version tags must never be recreated or moved once published. GitHub's
+old "tag protection rules" were retired in 2024; the current mechanism is a
+[tag ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets).
+Create one in this repository's **Settings → Rules → Rulesets → New ruleset →
+New tag ruleset**:
 
-```
-v[0-9]*.[0-9]*.[0-9]*
-```
+- **Target tags**: pattern `v*.*.*` (matches every `vX.Y.Z` tag; the required
+  dots mean it does **not** match `v1` — that alias must stay movable by the
+  release workflow).
+- **Restrict deletions** and **Block force pushes**: both enabled.
+- No bypass list, so not even an admin can move or delete a matching tag from
+  outside this process.
 
-This matches every `vX.Y.Z` tag and blocks non-admins (including force-pushes)
-from updating or deleting them, while intentionally **not** matching `v1` —
-that alias must stay movable by the release workflow.
+Equivalently, via the API (`--input -` reads the JSON body from stdin):
 
 ```bash
-gh api repos/inkdrafts/notiongit-sync/tags/protection \
-  -X POST -f pattern='v[0-9]*.[0-9]*.[0-9]*'
+cat <<'JSON' | gh api repos/inkdrafts/notiongit-sync/rulesets --input -
+{
+  "name": "immutable-version-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["refs/tags/v*.*.*"], "exclude": [] } },
+  "rules": [ { "type": "deletion" }, { "type": "non_fast_forward" } ]
+}
+JSON
 ```
 
 This is a repository setting, not something a workflow file can enforce on
