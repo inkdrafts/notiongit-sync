@@ -218,16 +218,41 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     env = baseEnv(site);
   });
 
-  it('validates the environment before any I/O', async () => {
-    const noToken = await runEngine(baseEnv(site, { NOTION_TOKEN: '' }));
-    expect(noToken.exitCode).toBe(1);
-    expect(noToken.stderr).toContain('NOTION_TOKEN environment variable is not set.');
+  it('exits cleanly as a no-op — not a failure — when credentials are absent or blank, before any I/O', async () => {
+    const cases = [
+      ['absent token', { NOTION_TOKEN: '' }, 'NOTION_TOKEN'],
+      ['whitespace-only token', { NOTION_TOKEN: '   ' }, 'NOTION_TOKEN'],
+      ['absent database ids', { NOTION_PAGES_DATABASE_ID: '', NOTION_POSTS_DATABASE_ID: '' }, 'DATABASE_ID'],
+      ['whitespace-only database ids', { NOTION_PAGES_DATABASE_ID: ' ', NOTION_POSTS_DATABASE_ID: '\t\n' }, 'DATABASE_ID'],
+    ];
 
-    const noDb = await runEngine(baseEnv(site, {
-      NOTION_PAGES_DATABASE_ID: '', NOTION_POSTS_DATABASE_ID: '',
-    }));
-    expect(noDb.exitCode).toBe(1);
-    expect(noDb.stderr).toContain('Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.');
+    for (const [, overrides, expectedMention] of cases) {
+      const outFile = makeOutputFile();
+      const { result, outputs } = await outputsOf(baseEnv(site, overrides), outFile);
+
+      // A no-op is not an error: exit 0, no stderr, no scary log lines.
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(outputs.changed).toBe('false');
+      expect(outputs.summary).toContain(expectedMention);
+
+      // No filesystem changes — the credential check runs before any I/O.
+      expect(existsSync(path.join(site, '_pages'))).toBe(false);
+      expect(existsSync(path.join(site, '_posts'))).toBe(false);
+      expect(existsSync(path.join(site, '_data'))).toBe(false);
+
+      // Never reveals a secret value, only names the missing key.
+      expect(result.stdout + outputs.summary).not.toContain(TOKEN);
+    }
+  });
+
+  it('the no-op path also exits 0 without GITHUB_OUTPUT set (a plain local run)', async () => {
+    const result = await runEngine(baseEnv(site, { NOTION_TOKEN: '' }));
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Notion sync skipped');
+    expect(result.stdout).toContain('NOTION_TOKEN');
+    expect(existsSync(path.join(site, '_pages'))).toBe(false);
   });
 
   it('first sync writes the site and reports changed=true', async () => {
