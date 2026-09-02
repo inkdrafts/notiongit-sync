@@ -640,7 +640,8 @@ async function syncPages() {
 
       // Handle slug rename
       const prevFilename = notionIdToFile.get(page.id);
-      if (prevFilename && prevFilename !== filename) {
+      const renamed = Boolean(prevFilename && prevFilename !== filename);
+      if (renamed) {
         try { fs.unlinkSync(path.join(PAGES_DIR, prevFilename)); } catch { /* gone */ }
         stats.renamed++;
         console.log(`     renamed: ${prevFilename} → ${filename}`);
@@ -653,9 +654,14 @@ async function syncPages() {
 
       if (needsWrite) {
         fs.writeFileSync(filePath, content, 'utf8');
-        const isNew = !prevFilename && !existingFiles.includes(filename);
-        console.log(`     ${isNew ? 'created' : 'updated'}: _pages/${filename}`);
-        isNew ? stats.created++ : stats.updated++;
+        // A rename already carries the write; don't also count it as created/updated.
+        if (!renamed) {
+          const isNew = !existingFiles.includes(filename);
+          console.log(`     ${isNew ? 'created' : 'updated'}: _pages/${filename}`);
+          isNew ? stats.created++ : stats.updated++;
+        } else {
+          console.log(`     wrote: _pages/${filename}`);
+        }
       } else {
         console.log('     unchanged');
         stats.unchanged++;
@@ -813,7 +819,8 @@ async function syncPosts() {
       const filePath = path.join(POSTS_DIR, filename);
 
       const prevFilename = notionIdToFile.get(page.id);
-      if (prevFilename && prevFilename !== filename) {
+      const renamed = Boolean(prevFilename && prevFilename !== filename);
+      if (renamed) {
         try { fs.unlinkSync(path.join(POSTS_DIR, prevFilename)); } catch { /* gone */ }
         stats.renamed++;
         console.log(`     renamed: ${prevFilename} → ${filename}`);
@@ -826,9 +833,14 @@ async function syncPosts() {
 
       if (needsWrite) {
         fs.writeFileSync(filePath, content, 'utf8');
-        const isNew = !prevFilename && !existingFiles.includes(filename);
-        console.log(`     ${isNew ? 'created' : 'updated'}: ${filename}`);
-        isNew ? stats.created++ : stats.updated++;
+        // A rename already carries the write; don't also count it as created/updated.
+        if (!renamed) {
+          const isNew = !existingFiles.includes(filename);
+          console.log(`     ${isNew ? 'created' : 'updated'}: ${filename}`);
+          isNew ? stats.created++ : stats.updated++;
+        } else {
+          console.log(`     wrote: ${filename}`);
+        }
       } else {
         console.log('     unchanged');
         stats.unchanged++;
@@ -939,13 +951,16 @@ async function main() {
     process.exit(1);
   }
 
-  let sections = [];
+  let sections;
   try {
     sections = await run(config);
   } catch (err) {
-    // Emit what completed before the failure so a consumer reading this step's
-    // outputs still sees them, then fail the run.
-    writeActionOutputs(buildActionResult(sections));
+    // A section threw mid-run (a database query failed, or the bulk-delete
+    // guard tripped) — the run did not finish, so no outputs are written.
+    // Files already rewritten earlier in this pass (or by a slug rename) may
+    // remain on disk as uncommitted changes; the next successful sync
+    // reconciles them, and the consumer's commit step never runs off a
+    // partial/inaccurate summary in the meantime.
     console.error(`\nFatal: ${err.message}`);
     process.exit(1);
   }

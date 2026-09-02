@@ -103,6 +103,17 @@ describe('action.yml steps', () => {
     });
   });
 
+  it('has no undocumented keys on any step (e.g. continue-on-error, if, timeout-minutes)', () => {
+    // Pins the exact key set per step so a future edit that silently changes
+    // failure/skip behavior (continue-on-error, if, timeout-minutes, ...) fails
+    // this test instead of shipping unnoticed.
+    expect(Object.keys(setup).sort()).toEqual(['name', 'uses']);
+    expect(Object.keys(install).sort()).toEqual(['name', 'run', 'shell', 'working-directory']);
+    expect(Object.keys(sync).sort()).toEqual(
+      ['env', 'id', 'name', 'run', 'shell', 'working-directory']
+    );
+  });
+
   it('never lets credentials reach run commands or outputs', () => {
     // The token may only appear in the env block; anything echoed or written
     // by a run step would leak into the public run log.

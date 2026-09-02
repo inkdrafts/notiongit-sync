@@ -188,8 +188,8 @@ bulk-delete guard tripped. The caller (the site's workflow) decides what to comm
   id: sync
   with:
     notion_token: ${{ secrets.NOTION_TOKEN }}
-    pages_database_id: ${{ vars.NOTION_PAGES_DATABASE_ID }}
-    posts_database_id: ${{ vars.NOTION_POSTS_DATABASE_ID }}
+    pages_database_id: ${{ secrets.NOTION_PAGES_DATABASE_ID }}
+    posts_database_id: ${{ secrets.NOTION_POSTS_DATABASE_ID }}
 ```
 
 Run it after `actions/checkout` in the site's own repository (the engine writes
@@ -211,8 +211,8 @@ jobs:
         id: sync
         with:
           notion_token: ${{ secrets.NOTION_TOKEN }}
-          pages_database_id: ${{ vars.NOTION_PAGES_DATABASE_ID }}
-          posts_database_id: ${{ vars.NOTION_POSTS_DATABASE_ID }}
+          pages_database_id: ${{ secrets.NOTION_PAGES_DATABASE_ID }}
+          posts_database_id: ${{ secrets.NOTION_POSTS_DATABASE_ID }}
       - name: Commit synced content
         if: steps.sync.outputs.changed == 'true'
         run: |

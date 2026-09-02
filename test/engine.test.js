@@ -110,14 +110,20 @@ describe('resolveConfig (environment → config mapping)', () => {
   });
 
   it('does not read or mutate process.env when env is injected', () => {
+    // Ambient-proof: assert the engine-relevant keys are absent afterwards and
+    // everything else is untouched, regardless of what the shell exports.
+    const tracked = ['NOTION_TOKEN', 'NOTION_PAGES_DATABASE_ID', 'NOTION_POSTS_DATABASE_ID', 'SITE_ROOT'];
     const before = { ...process.env };
-    delete process.env.NOTION_TOKEN;
-    delete process.env.NOTION_PAGES_DATABASE_ID;
-    delete process.env.NOTION_POSTS_DATABASE_ID;
+    for (const key of tracked) delete process.env[key];
 
     engine.resolveConfig({ NOTION_TOKEN: 't', NOTION_PAGES_DATABASE_ID: 'db' });
 
-    expect(process.env).toEqual(before);
+    for (const key of tracked) expect(process.env[key]).toBeUndefined();
+    for (const key of Object.keys(before)) {
+      if (!tracked.includes(key)) expect(process.env[key]).toBe(before[key]);
+    }
+    // Restore the ambient environment for other test files.
+    Object.assign(process.env, before);
   });
 });
 

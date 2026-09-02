@@ -198,6 +198,14 @@ const outputsOf = async (env, file) => {
 
 // ─── Scenarios ────────────────────────────────────────────────────────────────
 
+// Scenarios below share one `site` checkout and run in file order (Bun runs a
+// describe block's tests in declaration order, not in parallel or shuffled).
+// This is deliberate: the engine's whole behavior is incremental — create,
+// then re-sync unchanged, then edit, then rename, then delete — so each
+// scenario's expectations depend on the site state the previous one left on
+// disk, exactly as consecutive scheduled runs of the real Action would. A
+// scenario that needs an independent site (the bulk-delete-ratio and legacy
+// fallback scenarios) makes its own via makeSite().
 describe('local Action harness (fake Notion API + engine subprocess)', () => {
   let site;
   let outFile;
@@ -287,7 +295,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
       .toContain('Edited body paragraph.');
   });
 
-  it('slug renames move the file and report a rename', async () => {
+  it('slug renames move the file, report a rename, and are not also double-counted as updated', async () => {
     state.pages = [homeRow(), aboutRow('about-renamed')];
 
     const { result, outputs } = await outputsOf(env, outFile);
@@ -296,18 +304,69 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(existsSync(path.join(site, '_pages', 'about-renamed.md'))).toBe(true);
     expect(outputs.changed).toBe('true');
     expect(outputs.summary).toContain('1 renamed');
+    // A rename is one change, not two: it must not also count as "updated".
+    expect(outputs.summary).toContain('0 updated');
   });
 
-  it('bulk-delete guard aborts on zero published rows and deletes nothing', async () => {
+  it('bulk-delete guard aborts on zero published rows, deletes nothing, and emits no outputs', async () => {
     state.pages = []; // "misread": every tracked page looks unpublished
     const aboutPath = path.join(site, '_pages', 'about-renamed.md');
     const before = readFileSync(aboutPath, 'utf8');
+    const guardOutFile = makeOutputFile();
 
-    const result = await runEngine(env);
+    const result = await runEngine({ ...env, GITHUB_OUTPUT: guardOutFile });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('ABORT');
     expect(result.stderr).toContain('bulk-delete guard');
     expect(readFileSync(aboutPath, 'utf8')).toBe(before); // untouched
+
+    // The run didn't finish, so the documented "changed"/"summary" contract
+    // (empty on failure) holds — no outputs, not even a stale/misleading one.
+    expect(readFileSync(guardOutFile, 'utf8')).toBe('');
+  });
+
+  it('bulk-delete guard also aborts on a ratio breach with multiple published rows (not just zero)', async () => {
+    // Track four pages, then have Notion report only one published: 3 of 4
+    // stale (75%) exceeds MAX_DELETE_RATIO's 0.5 default, with processedIds
+    // non-empty — the ratio branch of the guard, distinct from the
+    // zero-published-rows branch covered above.
+    const ratioSite = makeSite();
+    const seedEnv = baseEnv(ratioSite);
+
+    // Ids must match the engine's notion_id extraction regex ([a-f0-9-]{36}),
+    // so these stay hex — plain slugs like "extra-a" would not round-trip.
+    const extraPages = [
+      { id: '11111111-1111-4111-8111-111111111111', slug: 'extra-a' },
+      { id: '22222222-1111-4111-8111-111111111111', slug: 'extra-b' },
+      { id: '33333333-1111-4111-8111-111111111111', slug: 'extra-c' },
+    ];
+    state.pages = [homeRow(), aboutRow(), ...extraPages.map(({ id, slug }) =>
+      row(id, {
+        Title: titleProp(slug),
+        Slug: textProp(slug),
+        Type: { select: { name: 'markdown' } },
+      })
+    )];
+    const seed = await runEngine(seedEnv);
+    expect(seed.exitCode).toBe(0);
+    for (const { slug } of extraPages) {
+      expect(existsSync(path.join(ratioSite, '_pages', `${slug}.md`))).toBe(true);
+    }
+
+    state.pages = [aboutRow()]; // only 1 of 4 tracked pages still published
+    const ratioOutFile = makeOutputFile();
+    const result = await runEngine({ ...seedEnv, GITHUB_OUTPUT: ratioOutFile });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('ABORT');
+    expect(result.stderr).toContain('bulk-delete guard');
+    expect(result.stderr).toContain('75%');
+    for (const { slug } of extraPages) {
+      expect(existsSync(path.join(ratioSite, '_pages', `${slug}.md`))).toBe(true); // untouched
+    }
+    expect(readFileSync(ratioOutFile, 'utf8')).toBe('');
+
+    state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
   });
 
   it('allow_bulk_delete=true (any case) pushes the deletion through', async () => {
