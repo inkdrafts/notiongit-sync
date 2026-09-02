@@ -11,12 +11,29 @@
  *   NOTION_PAGES_DATABASE_ID   — ID of the pages/sections database (optional)
  *   NOTION_POSTS_DATABASE_ID   — ID of the blog posts database (optional)
  *   NOTION_DATABASE_ID         — Legacy fallback for posts database
- *   ALLOW_BULK_DELETE          — Set to "true" to bypass the bulk-delete guard
+ *   ALLOW_BULK_DELETE          — "true" (any case) to bypass the bulk-delete guard
  *   MAX_DELETE_RATIO           — Fraction of tracked files a single sync may
  *                                delete before the guard trips (default 0.5)
+ *   SITE_ROOT                  — Root of the Jekyll site to write into
+ *                                (default: the parent of scripts/, i.e. the
+ *                                repository this script lives in; the GitHub
+ *                                Action wrapper points it at the consumer's
+ *                                checkout, since a composite action's own
+ *                                files live outside the workspace)
+ *   NOTION_BASE_URL            — Overrides the Notion API origin (default
+ *                                https://api.notion.com). Test/harness hook
+ *                                only: lets the local Action harness point the
+ *                                real client at a fake API; never set in
+ *                                production.
  *
  * At least one of NOTION_PAGES_DATABASE_ID or NOTION_POSTS_DATABASE_ID
  * (/ NOTION_DATABASE_ID) must be set.
+ *
+ * Action outputs — when GITHUB_OUTPUT is set (i.e. under the Action wrapper),
+ * the run appends two non-secret outputs for the consumer workflow:
+ *   changed                    — "true" when any tracked file was created,
+ *                                updated, renamed or deleted this run
+ *   summary                    — one-line count of what the run did
  */
 
 'use strict';
@@ -25,28 +42,72 @@ const { Client } = require('@notionhq/client');
 const fs   = require('fs');
 const path = require('path');
 
-// ─── Environment ──────────────────────────────────────────────────────────────
+// ─── Configuration ────────────────────────────────────────────────────────────
 
-const NOTION_TOKEN      = process.env.NOTION_TOKEN;
-const PAGES_DB_ID       = process.env.NOTION_PAGES_DATABASE_ID;
-const POSTS_DB_ID       = process.env.NOTION_POSTS_DATABASE_ID || process.env.NOTION_DATABASE_ID;
-const ALLOW_BULK_DELETE = process.env.ALLOW_BULK_DELETE === 'true';
-const MAX_DELETE_RATIO  = Number(process.env.MAX_DELETE_RATIO) || 0.5;
+/** Configuration problem — mirrors the script's historical exit-1 messages. */
+class ConfigError extends Error {}
 
-if (!NOTION_TOKEN) {
-  console.error('Error: NOTION_TOKEN environment variable is not set.');
-  process.exit(1);
-}
-if (!PAGES_DB_ID && !POSTS_DB_ID) {
-  console.error('Error: Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.');
-  process.exit(1);
+/**
+ * Normalize a boolean-ish flag. GitHub Actions inputs arrive as strings, so
+ * "true", "True" and "TRUE" all mean yes; everything else (including "false",
+ * "" and undefined) means no.
+ */
+function isTrue(value) {
+  return String(value ?? '').trim().toLowerCase() === 'true';
 }
 
-const notion    = new Client({ auth: NOTION_TOKEN });
-const ROOT_DIR  = path.resolve(__dirname, '..');
-const POSTS_DIR = path.join(ROOT_DIR, '_posts');
-const PAGES_DIR = path.join(ROOT_DIR, '_pages');
-const DATA_DIR  = path.join(ROOT_DIR, '_data');
+/**
+ * Resolve and validate the environment configuration.
+ *
+ * `env` is injected so tests can exercise the input mapping without touching
+ * process.env. Throws ConfigError (with the messages the script has always
+ * exited 1 on) when NOTION_TOKEN is missing or no database ID is set.
+ */
+function resolveConfig(env = process.env) {
+  const notionToken = env.NOTION_TOKEN;
+  if (!notionToken) {
+    throw new ConfigError('NOTION_TOKEN environment variable is not set.');
+  }
+
+  const pagesDbId = env.NOTION_PAGES_DATABASE_ID || '';
+  const postsDbId = env.NOTION_POSTS_DATABASE_ID || env.NOTION_DATABASE_ID || '';
+  if (!pagesDbId && !postsDbId) {
+    throw new ConfigError('Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.');
+  }
+
+  return {
+    notionToken,
+    pagesDbId,
+    postsDbId,
+    allowBulkDelete: isTrue(env.ALLOW_BULK_DELETE),
+    maxDeleteRatio:  Number(env.MAX_DELETE_RATIO) || 0.5,
+    siteRoot:        env.SITE_ROOT || path.join(__dirname, '..'),
+    notionBaseUrl:   env.NOTION_BASE_URL || '',
+  };
+}
+
+// ─── Run state ────────────────────────────────────────────────────────────────
+
+// Initialized per run by initRun(). Module-level so the sync functions below
+// close over it exactly as they always have.
+let notion;
+let PAGES_DB_ID, POSTS_DB_ID, ALLOW_BULK_DELETE, MAX_DELETE_RATIO;
+let ROOT_DIR, POSTS_DIR, PAGES_DIR, DATA_DIR;
+
+function initRun(config) {
+  PAGES_DB_ID       = config.pagesDbId;
+  POSTS_DB_ID       = config.postsDbId;
+  ALLOW_BULK_DELETE = config.allowBulkDelete;
+  MAX_DELETE_RATIO  = config.maxDeleteRatio;
+  notion            = new Client({
+    auth:   config.notionToken,
+    ...(config.notionBaseUrl ? { baseUrl: config.notionBaseUrl } : {}),
+  });
+  ROOT_DIR          = path.resolve(config.siteRoot);
+  POSTS_DIR         = path.join(ROOT_DIR, '_posts');
+  PAGES_DIR         = path.join(ROOT_DIR, '_pages');
+  DATA_DIR          = path.join(ROOT_DIR, '_data');
+}
 
 // ─── Rich text → Markdown ─────────────────────────────────────────────────────
 
@@ -238,10 +299,12 @@ function yamlStr(value) {
  * commit step never runs, so the repo is left untouched.
  *
  * Set ALLOW_BULK_DELETE=true to push a genuine mass unpublish through.
+ *
+ * Returns the number of files actually deleted.
  */
 function applyDeletions(dir, label, notionIdToFile, processedIds) {
   const stale = [...notionIdToFile].filter(([id]) => !processedIds.has(id));
-  if (stale.length === 0) return;
+  if (stale.length === 0) return 0;
 
   const tracked = notionIdToFile.size;
   const ratio   = stale.length / tracked;
@@ -270,14 +333,17 @@ function applyDeletions(dir, label, notionIdToFile, processedIds) {
     console.log(`\n   ALLOW_BULK_DELETE set — deleting ${stale.length} of ${tracked} ${label}.`);
   }
 
+  let deleted = 0;
   for (const [, filename] of stale) {
     try {
       fs.unlinkSync(path.join(dir, filename));
+      deleted++;
       console.log(`\n   removed (unpublished): ${filename}`);
     } catch {
       console.warn(`   Warning: could not remove ${filename}`);
     }
   }
+  return deleted;
 }
 
 // ─── YAML helpers (cont.) ─────────────────────────────────────────────────────
@@ -334,9 +400,11 @@ function buildHomeYaml(data) {
  * Edited line by line rather than parsed and re-emitted: _config.yml is otherwise
  * hand-maintained, and a YAML round-trip would drop its comments and ordering.
  * Anything unrecognised is left alone and reported.
+ *
+ * Returns true when the file was rewritten.
  */
 function syncConfigIdentity(name) {
-  if (!name) return;
+  if (!name) return false;
 
   const configPath = path.join(ROOT_DIR, '_config.yml');
   let original;
@@ -344,7 +412,7 @@ function syncConfigIdentity(name) {
     original = fs.readFileSync(configPath, 'utf8');
   } catch {
     console.warn('   Warning: _config.yml not readable — site title left unchanged.');
-    return;
+    return false;
   }
 
   let inAuthor    = false;
@@ -374,10 +442,11 @@ function syncConfigIdentity(name) {
 
   if (updated === original) {
     console.log('   unchanged: _config.yml');
-    return;
+    return false;
   }
   fs.writeFileSync(configPath, updated, 'utf8');
   console.log(`   updated: _config.yml (site title → ${name})`);
+  return true;
 }
 
 // ─── Parse social links text ──────────────────────────────────────────────────
@@ -506,15 +575,13 @@ async function syncPages() {
   try {
     publishedPages = await fetchPublished(PAGES_DB_ID);
   } catch (err) {
-    console.error(`   Error querying pages database: ${err.message}`);
-    process.exit(1);
+    throw new Error(`Error querying pages database: ${err.message}`);
   }
   console.log(`   Published pages in Notion: ${publishedPages.length}\n`);
-
   const navItems     = [];
   let   homeData     = null;
   const processedIds = new Set();
-  const stats        = { created: 0, updated: 0, unchanged: 0, errors: 0 };
+  const stats        = { created: 0, updated: 0, renamed: 0, deleted: 0, unchanged: 0, errors: 0 };
 
   for (const page of publishedPages) {
     processedIds.add(page.id);
@@ -575,6 +642,7 @@ async function syncPages() {
       const prevFilename = notionIdToFile.get(page.id);
       if (prevFilename && prevFilename !== filename) {
         try { fs.unlinkSync(path.join(PAGES_DIR, prevFilename)); } catch { /* gone */ }
+        stats.renamed++;
         console.log(`     renamed: ${prevFilename} → ${filename}`);
       }
 
@@ -599,37 +667,42 @@ async function syncPages() {
   }
 
   // Remove pages no longer published
-  applyDeletions(PAGES_DIR, 'pages', notionIdToFile, processedIds);
+  stats.deleted += applyDeletions(PAGES_DIR, 'pages', notionIdToFile, processedIds);
 
   // Write _data/nav.yml
   navItems.sort((a, b) => a.order - b.order);
   const navYaml = buildNavYaml(navItems);
   const navPath = path.join(DATA_DIR, 'nav.yml');
   const existingNav = fs.existsSync(navPath) ? fs.readFileSync(navPath, 'utf8') : '';
+  let navChanged = false;
   if (existingNav !== navYaml) {
     fs.writeFileSync(navPath, navYaml, 'utf8');
+    navChanged = true;
     console.log('\n   updated: _data/nav.yml');
   } else {
     console.log('\n   unchanged: _data/nav.yml');
   }
 
   // Write _data/home.yml (use existing if no home page found)
+  let homeChanged   = false;
+  let configChanged = false;
   if (homeData) {
     const homeYaml = buildHomeYaml(homeData);
     const homePath = path.join(DATA_DIR, 'home.yml');
     const existingHome = fs.existsSync(homePath) ? fs.readFileSync(homePath, 'utf8') : '';
     if (existingHome !== homeYaml) {
       fs.writeFileSync(homePath, homeYaml, 'utf8');
+      homeChanged = true;
       console.log('   updated: _data/home.yml');
     } else {
       console.log('   unchanged: _data/home.yml');
     }
 
-    syncConfigIdentity(homeData.name);
+    configChanged = syncConfigIdentity(homeData.name);
   }
 
   console.log(`\n   Created: ${stats.created} | Updated: ${stats.updated} | Unchanged: ${stats.unchanged} | Errors: ${stats.errors}`);
-  return stats.errors;
+  return { stats, navChanged, homeChanged, configChanged };
 }
 
 // ─── Posts sync ───────────────────────────────────────────────────────────────
@@ -710,13 +783,12 @@ async function syncPosts() {
   try {
     publishedPages = await fetchPublished(POSTS_DB_ID);
   } catch (err) {
-    console.error(`   Error querying posts database: ${err.message}`);
-    process.exit(1);
+    throw new Error(`Error querying posts database: ${err.message}`);
   }
   console.log(`   Published posts in Notion: ${publishedPages.length}\n`);
 
   const processedIds = new Set();
-  const stats = { created: 0, updated: 0, unchanged: 0, errors: 0 };
+  const stats = { created: 0, updated: 0, renamed: 0, deleted: 0, unchanged: 0, errors: 0 };
 
   for (const page of publishedPages) {
     processedIds.add(page.id);
@@ -743,6 +815,7 @@ async function syncPosts() {
       const prevFilename = notionIdToFile.get(page.id);
       if (prevFilename && prevFilename !== filename) {
         try { fs.unlinkSync(path.join(POSTS_DIR, prevFilename)); } catch { /* gone */ }
+        stats.renamed++;
         console.log(`     renamed: ${prevFilename} → ${filename}`);
       }
 
@@ -767,41 +840,142 @@ async function syncPosts() {
   }
 
   // Remove unpublished posts
-  applyDeletions(POSTS_DIR, 'posts', notionIdToFile, processedIds);
+  stats.deleted += applyDeletions(POSTS_DIR, 'posts', notionIdToFile, processedIds);
 
   console.log(`\n   Created: ${stats.created} | Updated: ${stats.updated} | Unchanged: ${stats.unchanged} | Errors: ${stats.errors}`);
-  return stats.errors;
+  return { stats, navChanged: false, homeChanged: false, configChanged: false };
+}
+
+// ─── Action outputs ───────────────────────────────────────────────────────────
+
+/**
+ * Fold per-section results into the two values the Action wrapper exposes.
+ * `changed` is true when any tracked file was created, updated, renamed or
+ * deleted, or any of the three data/config files was rewritten. `summary` is a
+ * single non-secret line of counts (titles, IDs and tokens deliberately
+ * excluded).
+ */
+function buildActionResult(sections) {
+  let changed = false;
+  const parts = [];
+
+  for (const { label, stats, navChanged, homeChanged, configChanged } of sections) {
+    if (stats.created || stats.updated || stats.renamed || stats.deleted ||
+        navChanged || homeChanged || configChanged) {
+      changed = true;
+    }
+
+    const counts = [
+      `${stats.created} created`,
+      `${stats.updated} updated`,
+      `${stats.renamed} renamed`,
+      `${stats.deleted} deleted`,
+      `${stats.unchanged} unchanged`,
+    ];
+    if (stats.errors) counts.push(`${stats.errors} errors`);
+    const section = `${label}: ${counts.join(', ')}`;
+
+    const dataFiles = [
+      navChanged    ? 'nav.yml'     : null,
+      homeChanged   ? 'home.yml'    : null,
+      configChanged ? '_config.yml' : null,
+    ].filter(Boolean);
+    parts.push(dataFiles.length ? `${section} (${dataFiles.join(', ')} updated)` : section);
+  }
+
+  if (sections.length === 0) parts.push('no sections synced');
+  return { changed, summary: parts.join('; ') };
+}
+
+/**
+ * Echo the run's `changed` / `summary` result and, when GITHUB_OUTPUT is set
+ * (the Action wrapper's sync step), append both as step outputs. The summary
+ * is counts only — credentials, database IDs and content never reach outputs.
+ */
+function writeActionOutputs(result) {
+  console.log(`\n   changed: ${result.changed}`);
+  console.log(`   summary: ${result.summary}`);
+
+  const outPath = process.env.GITHUB_OUTPUT;
+  if (!outPath) return;
+  fs.appendFileSync(outPath, [
+    `changed=${result.changed}`,
+    'summary<<NOTIONGIT_SYNC_SUMMARY_EOF',
+    result.summary,
+    'NOTIONGIT_SYNC_SUMMARY_EOF',
+    '',
+  ].join('\n'));
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-async function main() {
+async function run(config) {
+  initRun(config);
   console.log('Notion → Jekyll sync\n');
 
-  let totalErrors = 0;
+  const sections = [];
 
   if (PAGES_DB_ID) {
-    totalErrors += await syncPages();
+    sections.push({ label: 'pages', ...(await syncPages()) });
   } else {
     console.log('Skipping pages sync (NOTION_PAGES_DATABASE_ID not set).');
   }
 
   if (POSTS_DB_ID) {
-    totalErrors += await syncPosts();
+    sections.push({ label: 'posts', ...(await syncPosts()) });
   } else {
     console.log('Skipping posts sync (NOTION_POSTS_DATABASE_ID / NOTION_DATABASE_ID not set).');
   }
 
+  return sections;
+}
+
+async function main() {
+  let config;
+  try {
+    config = resolveConfig();
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+
+  let sections = [];
+  try {
+    sections = await run(config);
+  } catch (err) {
+    // Emit what completed before the failure so a consumer reading this step's
+    // outputs still sees them, then fail the run.
+    writeActionOutputs(buildActionResult(sections));
+    console.error(`\nFatal: ${err.message}`);
+    process.exit(1);
+  }
+
+  const totalErrors = sections.reduce((n, s) => n + s.stats.errors, 0);
+
   console.log('\n─────────────────────────────────────────────────────────────');
+  writeActionOutputs(buildActionResult(sections));
+
   if (totalErrors > 0) {
     console.error(`Sync finished with ${totalErrors} error(s). See above for details.`);
     process.exit(1);
-  } else {
-    console.log('Sync complete.');
   }
+  console.log('Sync complete.');
 }
 
-main().catch((err) => {
-  console.error(`\nFatal: ${err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`\nFatal: ${err.message}`);
+    process.exit(1);
+  });
+}
+
+// Exposed for tests: input mapping/normalization, output emission and result
+// folding — all pure or env-driven. The sync itself is exercised end-to-end by
+// the harness in test/ against a local fake Notion API.
+module.exports = {
+  ConfigError,
+  isTrue,
+  resolveConfig,
+  buildActionResult,
+  writeActionOutputs,
+};
