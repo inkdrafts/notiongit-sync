@@ -1020,12 +1020,12 @@ var require_sync_notion = __commonJS(function(exports, module) {
     return String(value ?? "").trim().toLowerCase() === "true";
   }
   function resolveConfig(env = process.env) {
-    const notionToken = env.NOTION_TOKEN;
+    const notionToken = String(env.NOTION_TOKEN ?? "").trim();
     if (!notionToken) {
       throw new ConfigError("NOTION_TOKEN environment variable is not set.");
     }
-    const pagesDbId = env.NOTION_PAGES_DATABASE_ID || "";
-    const postsDbId = env.NOTION_POSTS_DATABASE_ID || env.NOTION_DATABASE_ID || "";
+    const pagesDbId = String(env.NOTION_PAGES_DATABASE_ID ?? "").trim();
+    const postsDbId = String(env.NOTION_POSTS_DATABASE_ID ?? "").trim() || String(env.NOTION_DATABASE_ID ?? "").trim();
     if (!pagesDbId && !postsDbId) {
       throw new ConfigError("Set NOTION_PAGES_DATABASE_ID and/or NOTION_POSTS_DATABASE_ID.");
     }
@@ -1718,8 +1718,12 @@ ${body}
     try {
       config = resolveConfig();
     } catch (err) {
-      console.error(`Error: ${err.message}`);
-      process.exit(1);
+      if (!(err instanceof ConfigError))
+        throw err;
+      console.log(`Notion sync skipped: ${err.message}`);
+      console.log("Configure NOTION_TOKEN and at least one of NOTION_PAGES_DATABASE_ID / " + "NOTION_POSTS_DATABASE_ID (repository secrets/variables), then re-run this workflow.");
+      writeActionOutputs({ changed: false, summary: `skipped: ${err.message}` });
+      return;
     }
     let sections;
     try {
