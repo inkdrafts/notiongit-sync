@@ -81,7 +81,13 @@ function resolveConfig(env = process.env) {
     postsDbId,
     allowBulkDelete: isTrue(env.ALLOW_BULK_DELETE),
     maxDeleteRatio:  Number(env.MAX_DELETE_RATIO) || 0.5,
-    siteRoot:        env.SITE_ROOT || path.join(__dirname, '..'),
+    // import.meta.dir, not __dirname: bun build freezes __dirname into a
+    // literal absolute path at bundle time (the build machine's checkout
+    // path), which breaks both bundle reproducibility and the runtime
+    // fallback once bundled. import.meta.dir stays a live runtime lookup
+    // through bundling. The Action always sets SITE_ROOT explicitly, so this
+    // fallback only matters for local/dev invocations of either form.
+    siteRoot:        env.SITE_ROOT || path.join(import.meta.dir, '..'),
     notionBaseUrl:   env.NOTION_BASE_URL || '',
   };
 }

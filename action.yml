@@ -11,6 +11,10 @@
 # The engine runs with Bun against the consumer's checkout ($GITHUB_WORKSPACE),
 # not this action's own copy under _actions/ — SITE_ROOT below points its
 # writes (_pages/, _posts/, _data/, _config.yml) at the workspace.
+#
+# The sync step below runs the committed dist/index.js bundle, not
+# scripts/sync-notion.js directly, so consumer workflows never run
+# `bun install` — see dist/README.md for how the bundle is produced.
 
 name: 'Notion → Jekyll Sync'
 description: >-
@@ -63,15 +67,10 @@ runs:
     - name: 'Set up Bun'
       uses: oven-sh/setup-bun@v2
 
-    - name: 'Install engine dependencies'
-      shell: bash
-      run: bun install --frozen-lockfile
-      working-directory: ${{ github.action_path }}
-
     - name: 'Run Notion → Jekyll sync'
       id: sync
       shell: bash
-      run: bun scripts/sync-notion.js
+      run: bun dist/index.js
       working-directory: ${{ github.action_path }}
       env:
         NOTION_TOKEN: ${{ inputs.notion_token }}
