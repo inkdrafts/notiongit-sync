@@ -6,10 +6,10 @@ packaged to be consumed by generated sites as a reusable GitHub Action
 writes the Jekyll files a GitHub Pages site needs. Nothing else: no telemetry, no
 network calls beyond the Notion API, no site content of its own.
 
-> **Status:** this repository currently contains the engine as plain CommonJS source —
-> a faithful import of the production script. The GitHub Action wrapper
-> (`action.yml`) lands in issue #2; dependency bundling in #3; the `v1` release
-> tag in #7.
+> **Status:** the repository contains the engine as plain CommonJS source (the
+> imported production script, plus the input/output plumbing the Action wrapper
+> needs) and the `action.yml` composite wrapper. Dependency bundling lands in
+> #3; the `v1` release tag in #7.
 
 ## Import provenance
 
@@ -24,7 +24,9 @@ network calls beyond the Notion API, no site content of its own.
 
 The import is intentionally unmodified: no renames, no reformatting, no dependency
 changes, no bug fixes. Every later behavior change should be visible as a focused
-diff against this baseline.
+diff against this baseline. (Issue #2 is the first such diff: it adapts only the
+environment/input plumbing — site-root override, boolean normalization, change
+aggregation and `$GITHUB_OUTPUT` emission — leaving content conversion untouched.)
 
 `package.json` is recreated minimally (the engine's only dependency is
 `@notionhq/client`; the `sync` script entry is preserved, now invoked with `bun`
@@ -56,12 +58,14 @@ Notion Posts DB  ─┘                             ─→  _pages/{slug}.md, _p
 
 [Bun](https://bun.sh) ≥ 1.1 is this project's runtime and package manager — plain
 CommonJS with no Node- or Bun-specific APIs, so the script runs unmodified
-(`bun scripts/sync-notion.js`; GitHub-hosted runners get Bun via
-[`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun) when the Action
-wrapper lands in #2). The script resolves the Jekyll site
-root as the parent of `scripts/` (`path.resolve(__dirname, '..')`), so it is
-designed to run inside a consumer's Jekyll site checkout — in this repository it is
-engine source, not a runnable site.
+(`bun scripts/sync-notion.js`; the Action wrapper installs Bun on GitHub-hosted
+runners via [`oven-sh/setup-bun@v2`](https://github.com/oven-sh/setup-bun)). The
+script resolves the Jekyll site root as the parent of `scripts/`
+(`path.resolve(__dirname, '..')`) unless `SITE_ROOT` says otherwise — in this
+repository it is engine source, not a runnable site. When the Action wrapper runs
+it, a composite action's own files live under `_actions/`, outside the consumer's
+workspace, so the wrapper points `SITE_ROOT` at `$GITHUB_WORKSPACE` and the
+engine writes into the site checkout that called it.
 
 ## Environment variables
 
@@ -71,8 +75,11 @@ engine source, not a runnable site.
 | `NOTION_PAGES_DATABASE_ID` | One of the two DB IDs | ID of the Pages database (below). Unset → pages sync skipped. |
 | `NOTION_POSTS_DATABASE_ID` | One of the two DB IDs | ID of the Posts database (below). Unset → posts sync skipped. |
 | `NOTION_DATABASE_ID` | No | Legacy fallback for the posts database; used only when `NOTION_POSTS_DATABASE_ID` is unset. |
-| `ALLOW_BULK_DELETE` | No | Set to exactly `true` to bypass the bulk-delete guard (below). |
+| `ALLOW_BULK_DELETE` | No | `true` (case-insensitive — the Action input normalizes `True`/`TRUE` too) to bypass the bulk-delete guard (below). |
 | `MAX_DELETE_RATIO` | No | Fraction of tracked files a sync may delete before the guard trips. Default `0.5`. A value of `0` — or any non-numeric value — silently falls back to `0.5` (`Number(x) \|\| 0.5`); a negative value trips the guard on any multi-file deletion, and a value above `1` disables the ratio check. |
+| `SITE_ROOT` | No | Root of the Jekyll site to write into. Default: the parent of `scripts/`. The Action wrapper sets it to `$GITHUB_WORKSPACE`. |
+| `NOTION_BASE_URL` | No | Test hook: overrides the Notion API origin (`https://api.notion.com` by default) so the local harness can serve a fake API. Never set in production. |
+| `GITHUB_OUTPUT` | No | Set by the runner when the engine runs as an Action step; the engine appends the `changed` / `summary` outputs (below) to it. |
 
 At least one of `NOTION_PAGES_DATABASE_ID` / `NOTION_POSTS_DATABASE_ID` (or the
 legacy `NOTION_DATABASE_ID`) must be set alongside `NOTION_TOKEN`, otherwise the
@@ -174,12 +181,89 @@ with `ALLOW_BULK_DELETE=true`.
 database IDs, a database query failed, any per-row error occurred, or the
 bulk-delete guard tripped. The caller (the site's workflow) decides what to commit.
 
+## Usage as a GitHub Action
+
+```yaml
+- uses: inkdrafts/notiongit-sync@v1
+  id: sync
+  with:
+    notion_token: ${{ secrets.NOTION_TOKEN }}
+    pages_database_id: ${{ secrets.NOTION_PAGES_DATABASE_ID }}
+    posts_database_id: ${{ secrets.NOTION_POSTS_DATABASE_ID }}
+```
+
+Run it after `actions/checkout` in the site's own repository (the engine writes
+into the checkout, not the action's copy). A complete consumer workflow:
+
+```yaml
+name: Sync from Notion
+on:
+  schedule: [{ cron: '0 * * * *' }]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: inkdrafts/notiongit-sync@v1
+        id: sync
+        with:
+          notion_token: ${{ secrets.NOTION_TOKEN }}
+          pages_database_id: ${{ secrets.NOTION_PAGES_DATABASE_ID }}
+          posts_database_id: ${{ secrets.NOTION_POSTS_DATABASE_ID }}
+      - name: Commit synced content
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git config user.name  "notiongit-sync"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A _pages _posts _data _config.yml
+          git commit -m "chore: sync from Notion" || exit 0
+          git push
+```
+
+### Inputs
+
+| Input | Required | Default | Maps to |
+|---|---|---|---|
+| `notion_token` | **Yes** | — | `NOTION_TOKEN` |
+| `pages_database_id` | No | `''` | `NOTION_PAGES_DATABASE_ID` — empty skips the pages sync |
+| `posts_database_id` | No | `''` | `NOTION_POSTS_DATABASE_ID` — empty skips the posts sync unless the legacy `NOTION_DATABASE_ID` env var is set |
+| `allow_bulk_delete` | No | `'false'` | `ALLOW_BULK_DELETE`, normalized case-insensitively (`true`/`True`/`TRUE`) |
+
+`MAX_DELETE_RATIO` stays environment-only: set it in the calling workflow's
+`env:` and the action's sync step inherits it.
+
+### Outputs
+
+| Output | Meaning |
+|---|---|
+| `changed` | `"true"` when any tracked file was created, updated, renamed or deleted this run — including `_data/nav.yml`, `_data/home.yml` and the managed lines of `_config.yml`. `"false"` after a no-op run. Empty when the run failed before finishing (a failed step fails the job anyway). |
+| `summary` | One-line, non-secret count of what the run did, e.g. `pages: 1 created, 0 updated, 0 renamed, 0 deleted, 0 unchanged (nav.yml, home.yml, _config.yml updated); posts: 3 unchanged`. Counts only — tokens, database IDs and content titles are never included. |
+
+The token is passed to the engine through its environment only; it is never
+echoed, logged, or written to outputs.
+
 ## Usage
 
 ```bash
 bun install
 NOTION_TOKEN=secret NOTION_PAGES_DATABASE_ID=… NOTION_POSTS_DATABASE_ID=… bun run sync
 ```
+
+## Development
+
+```bash
+bun test   # unit tests + action.yml contract tests + the local Action harness
+```
+
+The harness (`test/harness.test.js`) runs the engine as a real subprocess
+against a fake Notion API served on `localhost` (`NOTION_BASE_URL`) and a
+throwaway site (`SITE_ROOT`), with exactly the environment the `action.yml`
+step sets — proving input mapping, boolean normalization, `$GITHUB_OUTPUT`
+emission, the bulk-delete guard and the legacy posts-only fallback end to end,
+with no network access and no real workspace data.
 
 ## License
 

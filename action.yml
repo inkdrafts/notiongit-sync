@@ -1,0 +1,81 @@
+# Reusable GitHub Action wrapping the Notion → Jekyll sync engine.
+#
+# Consumers run this from their own site repository (after actions/checkout):
+#
+#     - uses: inkdrafts/notiongit-sync@v1
+#       with:
+#         notion_token: ${{ secrets.NOTION_TOKEN }}
+#         pages_database_id: ${{ vars.PAGES_DATABASE_ID }}
+#         posts_database_id: ${{ vars.POSTS_DATABASE_ID }}
+#
+# The engine runs with Bun against the consumer's checkout ($GITHUB_WORKSPACE),
+# not this action's own copy under _actions/ — SITE_ROOT below points its
+# writes (_pages/, _posts/, _data/, _config.yml) at the workspace.
+
+name: 'Notion → Jekyll Sync'
+description: >-
+  Syncs published pages and posts from two Notion databases into a Jekyll site
+  checkout: _pages/, _posts/, _data/nav.yml, _data/home.yml, and the title /
+  author.name lines of _config.yml. Aborts on suspicious bulk deletes.
+
+inputs:
+  notion_token:
+    description: >-
+      Notion integration secret. Treated as a credential: never printed, never
+      included in outputs.
+    required: true
+  pages_database_id:
+    description: 'ID of the Notion pages database. Empty → pages sync skipped.'
+    required: false
+    default: ''
+  posts_database_id:
+    description: >-
+      ID of the Notion posts database. Empty → posts sync skipped, unless the
+      legacy NOTION_DATABASE_ID environment variable is set (still honored).
+    required: false
+    default: ''
+  allow_bulk_delete:
+    description: >-
+      true to allow a sync that deletes every tracked file. By default the run
+      aborts when Notion returns zero published rows or a deletion exceeds
+      MAX_DELETE_RATIO (environment variable, default 0.5). "true" in any case
+      spelling is accepted.
+    required: false
+    default: 'false'
+
+outputs:
+  changed:
+    description: >-
+      "true" when any tracked file was created, updated, renamed or deleted
+      this run — including _data/nav.yml, _data/home.yml and the managed lines
+      of _config.yml. Empty when the run failed before finishing.
+    value: ${{ steps.sync.outputs.changed }}
+  summary:
+    description: >-
+      One-line, non-secret count of what the sync did, e.g.
+      "pages: 1 created, 0 updated, 0 renamed, 0 deleted, 2 unchanged
+      (nav.yml updated); posts: ...".
+    value: ${{ steps.sync.outputs.summary }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 'Set up Bun'
+      uses: oven-sh/setup-bun@v2
+
+    - name: 'Install engine dependencies'
+      shell: bash
+      run: bun install --frozen-lockfile
+      working-directory: ${{ github.action_path }}
+
+    - name: 'Run Notion → Jekyll sync'
+      id: sync
+      shell: bash
+      run: bun scripts/sync-notion.js
+      working-directory: ${{ github.action_path }}
+      env:
+        NOTION_TOKEN: ${{ inputs.notion_token }}
+        NOTION_PAGES_DATABASE_ID: ${{ inputs.pages_database_id }}
+        NOTION_POSTS_DATABASE_ID: ${{ inputs.posts_database_id }}
+        ALLOW_BULK_DELETE: ${{ inputs.allow_bulk_delete }}
+        SITE_ROOT: ${{ github.workspace }}

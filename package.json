@@ -4,12 +4,16 @@
   "private": true,
   "description": "Syncs published pages and posts from two Notion databases into a Jekyll site (_pages/, _posts/, _data/, _config.yml identity)",
   "scripts": {
-    "sync": "bun scripts/sync-notion.js"
+    "sync": "bun scripts/sync-notion.js",
+    "test": "bun test"
   },
   "dependencies": {
     "@notionhq/client": "^2.3.0"
   },
   "engines": {
     "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "js-yaml": "^5.4.1"
   }
 }
