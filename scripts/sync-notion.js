@@ -38,7 +38,13 @@
  * the run appends two non-secret outputs for the consumer workflow:
  *   changed                    — "true" when any tracked file was created,
  *                                updated, renamed or deleted this run
- *   summary                    — one-line count of what the run did
+ *   summary                    — compact JSON run summary, schema_version 1
+ *                                (see docs/run-summary-schema.md). Every
+ *                                terminal path — success, no-op, a guarded
+ *                                deletion, or an unexpected sync error —
+ *                                emits one.
+ * When GITHUB_STEP_SUMMARY is set, the same run summary is also rendered as
+ * Markdown and appended there, for the human-readable Actions run page.
  */
 
 'use strict';
@@ -51,6 +57,22 @@ const path = require('path');
 
 /** Configuration problem — mirrors the script's historical exit-1 messages. */
 class ConfigError extends Error {}
+
+/**
+ * The suspicious-bulk-delete guard tripped. Carries structured, count-only
+ * detail (never filenames — those may echo private Notion titles) so the run
+ * summary can report a safe `bulk_delete_guard` failure without re-parsing
+ * the human-readable stderr message below.
+ */
+class GuardError extends Error {
+  constructor(message, { label, staleCount, trackedCount, ratio }) {
+    super(message);
+    this.label = label;
+    this.staleCount = staleCount;
+    this.trackedCount = trackedCount;
+    this.ratio = ratio;
+  }
+}
 
 /**
  * Normalize a boolean-ish flag. GitHub Actions inputs arrive as strings, so
@@ -338,7 +360,9 @@ function applyDeletions(dir, label, notionIdToFile, processedIds) {
       `   Nothing was changed. Check the database in Notion. If the deletion is real,\n` +
       `   re-run this workflow with ALLOW_BULK_DELETE=true.`
     );
-    throw new Error(`bulk-delete guard tripped for ${label}`);
+    throw new GuardError(`bulk-delete guard tripped for ${label}`, {
+      label, staleCount: stale.length, trackedCount: tracked, ratio,
+    });
   }
 
   if (suspicious) {
@@ -911,24 +935,154 @@ function buildActionResult(sections) {
   return { changed, summary: parts.join('; ') };
 }
 
+// ─── Run summary (schema_version 1) ───────────────────────────────────────────
+//
+// See docs/run-summary-schema.md and schema/run-summary.v1.json for the
+// documented, versioned contract this section builds and emits. Kept in sync
+// by test/run-summary-schema.test.js.
+
+const RUN_SUMMARY_SCHEMA_VERSION = 1;
+
+/**
+ * Replace every occurrence of a known secret value (a credential or database
+ * ID) with a fixed placeholder. Applied to any text that reaches the run
+ * summary's `detail` field — the only place free-form error text (which may
+ * echo a Notion API error message containing a database ID) can end up.
+ * Plain substring replacement, not a regex: secrets are opaque values, never
+ * patterns, so there is nothing to escape.
+ */
+function redact(text, secrets = []) {
+  let safe = String(text ?? '');
+  for (const secret of secrets) {
+    if (!secret) continue;
+    safe = safe.split(secret).join('[redacted]');
+  }
+  return safe;
+}
+
+/** The `{created, updated, renamed, deleted, unchanged, errors}` counts for one section label, or null if that section didn't run. */
+function sectionCounts(sections, label) {
+  const section = sections.find((s) => s.label === label);
+  return section ? { ...section.stats } : null;
+}
+
+/**
+ * Whether nav.yml/home.yml/_config.yml were rewritten anywhere in this run.
+ * Only the pages section ever sets these (posts always reports all three
+ * false), so aggregating with `.some()` across every section that ran — not
+ * just pages — gives the same answer regardless of which sections ran, with
+ * one place computing it instead of two definitions that could drift apart.
+ */
+function dataFilesChanged(sections) {
+  return {
+    nav:    sections.some((s) => s.navChanged),
+    home:   sections.some((s) => s.homeChanged),
+    config: sections.some((s) => s.configChanged),
+  };
+}
+
+/**
+ * Build the schema_version 1 run summary object — the single source of truth
+ * for both the `summary` Action output (compact JSON) and the
+ * $GITHUB_STEP_SUMMARY Markdown rendering. Every terminal path in main()
+ * calls this exactly once, so every path — success, no-op, a guarded
+ * deletion, or an unexpected sync error — produces a parseable summary.
+ *
+ * `sections` (from run()) is only available on paths that ran to completion
+ * (`synced` / `row_errors`); a run that aborted before finishing a section
+ * (`bulk_delete_guard` / `sync_error`) passes no sections, so pages/posts/
+ * data_files are null — a documented fallback, not a missing value. A run
+ * where only one of pages/posts is configured also leaves the other `null`
+ * on success — `null` there means "this section didn't run", not "this run
+ * failed" (see docs/run-summary-schema.md).
+ *
+ * `secrets` has no default on purpose: every call site must state its
+ * redaction stance explicitly (`[]` when a path genuinely has no secrets
+ * yet, e.g. before config resolves) rather than silently redacting nothing
+ * because a future caller forgot the argument.
+ */
+function buildRunSummary({ result, code, changed, startedAt, finishedAt, sections = [], detail, secrets }) {
+  if (!Array.isArray(secrets)) {
+    throw new TypeError('buildRunSummary: secrets must be an array (pass [] when none apply yet)');
+  }
+
+  return {
+    schema_version: RUN_SUMMARY_SCHEMA_VERSION,
+    result,
+    code,
+    changed,
+    started_at:  startedAt,
+    finished_at: finishedAt,
+    pages:       sectionCounts(sections, 'pages'),
+    posts:       sectionCounts(sections, 'posts'),
+    data_files:  sections.length === 0 ? null : dataFilesChanged(sections),
+    detail:      redact(detail, secrets),
+  };
+}
+
+const RESULT_ICON = { success: '✅', no_op: '⏭️', failure: '❌' };
+
+/** Render a run summary as Markdown for $GITHUB_STEP_SUMMARY — the same data as the JSON output, for a human reading the Actions run page. */
+function renderStepSummaryMarkdown(summary) {
+  const lines = [
+    `### Notion → Jekyll sync — ${RESULT_ICON[summary.result] ?? ''} ${summary.result} (\`${summary.code}\`)`,
+    '',
+    `- **Changed:** ${summary.changed ? 'yes' : 'no'}`,
+    `- **Started:** ${summary.started_at}`,
+    `- **Finished:** ${summary.finished_at}`,
+    '',
+  ];
+
+  if (summary.pages || summary.posts) {
+    lines.push('| Section | Created | Updated | Renamed | Deleted | Unchanged | Errors |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+    for (const [label, counts] of [['Pages', summary.pages], ['Posts', summary.posts]]) {
+      if (!counts) continue;
+      lines.push(`| ${label} | ${counts.created} | ${counts.updated} | ${counts.renamed} | ${counts.deleted} | ${counts.unchanged} | ${counts.errors} |`);
+    }
+    lines.push('');
+  }
+
+  if (summary.data_files) {
+    const updated = Object.entries({ 'nav.yml': summary.data_files.nav, 'home.yml': summary.data_files.home, '_config.yml': summary.data_files.config })
+      .filter(([, changed]) => changed).map(([name]) => name);
+    lines.push(`**Data files updated:** ${updated.length ? updated.join(', ') : 'none'}`);
+    lines.push('');
+  }
+
+  if (summary.detail) lines.push(summary.detail);
+
+  return `${lines.join('\n')}\n`;
+}
+
 /**
  * Echo the run's `changed` / `summary` result and, when GITHUB_OUTPUT is set
- * (the Action wrapper's sync step), append both as step outputs. The summary
- * is counts only — credentials, database IDs and content never reach outputs.
+ * (the Action wrapper's sync step), append both as step outputs — `summary`
+ * as compact JSON matching schema_version 1. When GITHUB_STEP_SUMMARY is set,
+ * append the same data as Markdown. Both are non-secret by construction: the
+ * `detail` field is redacted before this function ever sees it.
  */
-function writeActionOutputs(result) {
-  console.log(`\n   changed: ${result.changed}`);
-  console.log(`   summary: ${result.summary}`);
+function writeActionOutputs(summary) {
+  const json = JSON.stringify(summary);
+  console.log(`\n   result: ${summary.result} (${summary.code})`);
+  console.log(`   changed: ${summary.changed}`);
+  console.log(`   summary: ${json}`);
 
   const outPath = process.env.GITHUB_OUTPUT;
-  if (!outPath) return;
-  fs.appendFileSync(outPath, [
-    `changed=${result.changed}`,
-    'summary<<NOTIONGIT_SYNC_SUMMARY_EOF',
-    result.summary,
-    'NOTIONGIT_SYNC_SUMMARY_EOF',
-    '',
-  ].join('\n'));
+  if (outPath) {
+    fs.appendFileSync(outPath, [
+      `changed=${summary.changed}`,
+      'summary<<NOTIONGIT_SYNC_SUMMARY_EOF',
+      json,
+      'NOTIONGIT_SYNC_SUMMARY_EOF',
+      '',
+    ].join('\n'));
+  }
+
+  const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (stepSummaryPath) {
+    fs.appendFileSync(stepSummaryPath, renderStepSummaryMarkdown(summary));
+  }
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -955,6 +1109,8 @@ async function run(config) {
 }
 
 async function main() {
+  const startedAt = new Date().toISOString();
+
   let config;
   try {
     config = resolveConfig();
@@ -972,28 +1128,67 @@ async function main() {
       'Configure NOTION_TOKEN and at least one of NOTION_PAGES_DATABASE_ID / ' +
       'NOTION_POSTS_DATABASE_ID (repository secrets/variables), then re-run this workflow.'
     );
-    writeActionOutputs({ changed: false, summary: `skipped: ${err.message}` });
+    writeActionOutputs(buildRunSummary({
+      result: 'no_op', code: 'missing_credentials', changed: false,
+      startedAt, finishedAt: new Date().toISOString(),
+      detail: `skipped: ${err.message}`,
+      secrets: [], // nothing was ever configured — nothing to redact
+    }));
     return;
   }
+
+  // Only ever holds credential values — never printed, only used to redact
+  // them out of error text that ends up in the run summary's `detail` field.
+  const secrets = [config.notionToken, config.pagesDbId, config.postsDbId].filter(Boolean);
 
   let sections;
   try {
     sections = await run(config);
   } catch (err) {
-    // A section threw mid-run (a database query failed, or the bulk-delete
-    // guard tripped) — the run did not finish, so no outputs are written.
-    // Files already rewritten earlier in this pass (or by a slug rename) may
+    // A section threw mid-run (a database query failed, a filesystem error,
+    // or the bulk-delete guard tripped) — the run did not finish. Files
+    // already rewritten earlier in this pass (or by a slug rename) may
     // remain on disk as uncommitted changes; the next successful sync
     // reconciles them, and the consumer's commit step never runs off a
-    // partial/inaccurate summary in the meantime.
+    // partial/inaccurate summary in the meantime. The run summary below
+    // still reports the failure — every terminal path emits one, even this
+    // one.
     console.error(`\nFatal: ${err.message}`);
+
+    const isGuard = err instanceof GuardError;
+    writeActionOutputs(buildRunSummary({
+      result: 'failure',
+      // `sync_error`, not `api_error`: run() can also throw on something
+      // that isn't a Notion API call at all (e.g. an unwritable site
+      // checkout) — this code names the generic "aborted outside the guard"
+      // case honestly rather than overclaiming a specific cause.
+      code: isGuard ? 'bulk_delete_guard' : 'sync_error',
+      changed: false,
+      startedAt, finishedAt: new Date().toISOString(),
+      secrets,
+      // Guard detail is built from structured counts, never the stale
+      // filenames in the stderr message above — those can echo private
+      // Notion page titles. Sync-error detail is the wrapped error message,
+      // redacted for the database IDs a Notion "not found" error commonly
+      // echoes back.
+      detail: isGuard
+        ? `bulk-delete guard tripped for ${err.label}: would delete ${err.staleCount} of ${err.trackedCount} tracked (${Math.round(err.ratio * 100)}%)`
+        : `sync failed: ${err.message}`,
+    }));
     process.exit(1);
   }
 
   const totalErrors = sections.reduce((n, s) => n + s.stats.errors, 0);
 
   console.log('\n─────────────────────────────────────────────────────────────');
-  writeActionOutputs(buildActionResult(sections));
+  const { changed, summary: detail } = buildActionResult(sections);
+  writeActionOutputs(buildRunSummary({
+    result: totalErrors > 0 ? 'failure' : 'success',
+    code:   totalErrors > 0 ? 'row_errors' : 'synced',
+    changed,
+    startedAt, finishedAt: new Date().toISOString(),
+    sections, detail, secrets,
+  }));
 
   if (totalErrors > 0) {
     console.error(`Sync finished with ${totalErrors} error(s). See above for details.`);
@@ -1014,8 +1209,13 @@ if (require.main === module) {
 // the harness in test/ against a local fake Notion API.
 module.exports = {
   ConfigError,
+  GuardError,
   isTrue,
   resolveConfig,
   buildActionResult,
+  RUN_SUMMARY_SCHEMA_VERSION,
+  redact,
+  buildRunSummary,
+  renderStepSummaryMarkdown,
   writeActionOutputs,
 };

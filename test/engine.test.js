@@ -212,76 +212,280 @@ describe('buildActionResult (changed / summary)', () => {
   });
 });
 
-// ─── writeActionOutputs: GITHUB_OUTPUT emission ───────────────────────────────
+// ─── redact: secret scrubbing ─────────────────────────────────────────────────
+
+describe('redact (secret scrubbing)', () => {
+  it('replaces every occurrence of a secret value with a fixed placeholder', () => {
+    expect(engine.redact('token tok-123 seen twice: tok-123', ['tok-123']))
+      .toBe('token [redacted] seen twice: [redacted]');
+  });
+
+  it('redacts multiple distinct secrets independently', () => {
+    expect(engine.redact('db db-a and db db-b', ['db-a', 'db-b']))
+      .toBe('db [redacted] and db [redacted]');
+  });
+
+  it('ignores falsy secrets (unset config values) instead of matching everything', () => {
+    expect(engine.redact('nothing to hide', ['', undefined, null])).toBe('nothing to hide');
+  });
+
+  it('is a plain substring replacement, not a regex — special characters are literal', () => {
+    expect(engine.redact('id (a.b+c) here', ['(a.b+c)'])).toBe('id [redacted] here');
+  });
+
+  it('passes text through unchanged when no secrets are given', () => {
+    expect(engine.redact('plain text')).toBe('plain text');
+  });
+
+  it('stringifies non-string input', () => {
+    expect(engine.redact(undefined, [])).toBe('');
+  });
+});
+
+// ─── buildRunSummary: schema_version 1 run summary ────────────────────────────
+
+describe('buildRunSummary (schema_version 1)', () => {
+  const base = {
+    result: 'success', code: 'synced', changed: true,
+    startedAt: '2026-09-02T12:00:00.000Z', finishedAt: '2026-09-02T12:00:03.000Z',
+    secrets: [],
+  };
+
+  it('always stamps schema_version 1', () => {
+    expect(engine.buildRunSummary({ ...base, detail: 'x' }).schema_version).toBe(1);
+    expect(engine.RUN_SUMMARY_SCHEMA_VERSION).toBe(1);
+  });
+
+  it('requires secrets to be passed explicitly (fails closed instead of silently skipping redaction)', () => {
+    const { secrets: _omit, ...withoutSecrets } = base;
+    expect(() => engine.buildRunSummary({ ...withoutSecrets, detail: 'x' })).toThrow('secrets must be an array');
+  });
+
+  it('sets pages/posts/data_files to null when no sections are given (the documented fallback)', () => {
+    const summary = engine.buildRunSummary({ ...base, result: 'failure', code: 'sync_error', changed: false, detail: 'x' });
+    expect(summary.pages).toBeNull();
+    expect(summary.posts).toBeNull();
+    expect(summary.data_files).toBeNull();
+  });
+
+  it('fills pages/posts counts and data_files from sections that ran', () => {
+    const summary = engine.buildRunSummary({
+      ...base,
+      detail: 'x',
+      sections: [
+        { label: 'pages', stats: { ...zeroStats(), created: 1 }, navChanged: true, homeChanged: false, configChanged: false },
+        { label: 'posts', stats: { ...zeroStats(), updated: 2 }, navChanged: false, homeChanged: false, configChanged: false },
+      ],
+    });
+    expect(summary.pages).toEqual({ created: 1, updated: 0, renamed: 0, deleted: 0, unchanged: 0, errors: 0 });
+    expect(summary.posts).toEqual({ created: 0, updated: 2, renamed: 0, deleted: 0, unchanged: 0, errors: 0 });
+    expect(summary.data_files).toEqual({ nav: true, home: false, config: false });
+  });
+
+  it('leaves only the section that ran non-null on a posts-only config, but data_files stays a real (non-null) answer', () => {
+    // A successful posts-only run: `pages` null just means "this section
+    // didn't run", not "this run failed" — data_files is still meaningful
+    // (posts never touches nav/home/config, so it's correctly all-false, not
+    // null) because at least one section (posts) did run.
+    const summary = engine.buildRunSummary({
+      ...base,
+      detail: 'x',
+      sections: [{ label: 'posts', stats: zeroStats(), navChanged: false, homeChanged: false, configChanged: false }],
+    });
+    expect(summary.pages).toBeNull();
+    expect(summary.posts).not.toBeNull();
+    expect(summary.data_files).toEqual({ nav: false, home: false, config: false });
+  });
+
+  it('redacts secrets out of detail using the provided secret list', () => {
+    const summary = engine.buildRunSummary({
+      ...base, result: 'failure', code: 'sync_error', changed: false,
+      detail: 'sync failed: Could not find database with ID: db-secret-123.',
+      secrets: ['db-secret-123'],
+    });
+    expect(summary.detail).toBe('sync failed: Could not find database with ID: [redacted].');
+  });
+
+  it('round-trips through JSON.stringify with the documented key order', () => {
+    const summary = engine.buildRunSummary({ ...base, detail: 'x' });
+    expect(Object.keys(summary)).toEqual([
+      'schema_version', 'result', 'code', 'changed',
+      'started_at', 'finished_at', 'pages', 'posts', 'data_files', 'detail',
+    ]);
+  });
+});
+
+// ─── renderStepSummaryMarkdown: $GITHUB_STEP_SUMMARY rendering ────────────────
+
+describe('renderStepSummaryMarkdown', () => {
+  it('renders result, code, changed and timestamps', () => {
+    const md = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'success', code: 'synced', changed: true,
+      startedAt: '2026-09-02T12:00:00.000Z', finishedAt: '2026-09-02T12:00:03.000Z',
+      detail: 'x', secrets: [],
+    }));
+    expect(md).toContain('success');
+    expect(md).toContain('`synced`');
+    expect(md).toContain('**Changed:** yes');
+    expect(md).toContain('2026-09-02T12:00:00.000Z');
+    expect(md).toContain('2026-09-02T12:00:03.000Z');
+  });
+
+  it('renders a counts table only when at least one section ran', () => {
+    const withSections = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'success', code: 'synced', changed: false,
+      startedAt: 't0', finishedAt: 't1', detail: 'x', secrets: [],
+      sections: [{ label: 'pages', stats: { ...zeroStats(), created: 1 }, navChanged: false, homeChanged: false, configChanged: false }],
+    }));
+    expect(withSections).toContain('| Pages | 1 | 0 | 0 | 0 | 0 | 0 |');
+
+    const withoutSections = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'no_op', code: 'missing_credentials', changed: false,
+      startedAt: 't0', finishedAt: 't0', detail: 'skipped: NOTION_TOKEN environment variable is not set.',
+      secrets: [],
+    }));
+    expect(withoutSections).not.toContain('| Section |');
+  });
+
+  it('lists updated data files by name', () => {
+    const md = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'success', code: 'synced', changed: true,
+      startedAt: 't0', finishedAt: 't1', detail: 'x', secrets: [],
+      sections: [{ label: 'pages', stats: zeroStats(), navChanged: true, homeChanged: false, configChanged: true }],
+    }));
+    expect(md).toContain('**Data files updated:** nav.yml, _config.yml');
+  });
+
+  it('includes the detail line', () => {
+    const md = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'failure', code: 'bulk_delete_guard', changed: false,
+      startedAt: 't0', finishedAt: 't1', secrets: [],
+      detail: 'bulk-delete guard tripped for pages: would delete 3 of 4 tracked (75%)',
+    }));
+    expect(md).toContain('bulk-delete guard tripped for pages: would delete 3 of 4 tracked (75%)');
+  });
+
+  it('never renders a secret value that made it past redact (defense in depth check)', () => {
+    const md = engine.renderStepSummaryMarkdown(engine.buildRunSummary({
+      result: 'failure', code: 'sync_error', changed: false,
+      startedAt: 't0', finishedAt: 't1',
+      detail: 'sync failed: db-secret-xyz not found',
+      secrets: ['db-secret-xyz'],
+    }));
+    expect(md).not.toContain('db-secret-xyz');
+    expect(md).toContain('[redacted]');
+  });
+});
+
+// ─── writeActionOutputs: GITHUB_OUTPUT / GITHUB_STEP_SUMMARY emission ─────────
 
 describe('writeActionOutputs (output emission)', () => {
   const tmpFiles = [];
   const originalGithubOutput = process.env.GITHUB_OUTPUT;
+  const originalStepSummary  = process.env.GITHUB_STEP_SUMMARY;
 
-  function makeOutputFile(initial = '') {
+  function makeFile(initial = '') {
     const dir  = mkdtempSync(path.join(tmpdir(), 'notiongit-outputs-'));
-    const file = path.join(dir, 'github_output');
+    const file = path.join(dir, 'out');
     writeFileSync(file, initial);
     tmpFiles.push(dir);
     return file;
   }
 
-  it('appends changed and a heredoc-delimited summary to GITHUB_OUTPUT', () => {
-    const file = makeOutputFile();
-    process.env.GITHUB_OUTPUT = file;
+  const sampleSummary = () => engine.buildRunSummary({
+    result: 'success', code: 'synced', changed: true,
+    startedAt: '2026-09-02T12:00:00.000Z', finishedAt: '2026-09-02T12:00:03.000Z',
+    detail: 'pages: 1 created', secrets: [],
+  });
 
-    engine.writeActionOutputs({ changed: true, summary: 'pages: 1 created' });
+  it('appends changed and a heredoc-delimited compact-JSON summary to GITHUB_OUTPUT', () => {
+    const file = makeFile();
+    process.env.GITHUB_OUTPUT = file;
+    delete process.env.GITHUB_STEP_SUMMARY;
+
+    const summary = sampleSummary();
+    engine.writeActionOutputs(summary);
 
     expect(readFileSync(file, 'utf8')).toBe(
       'changed=true\n' +
       'summary<<NOTIONGIT_SYNC_SUMMARY_EOF\n' +
-      'pages: 1 created\n' +
+      JSON.stringify(summary) + '\n' +
       'NOTIONGIT_SYNC_SUMMARY_EOF\n'
     );
   });
 
-  it('appends rather than overwrites, keeping earlier step outputs', () => {
-    const file = makeOutputFile('earlier=kept\n');
+  it('emits summary as a single-line compact JSON payload matching the schema', () => {
+    const file = makeFile();
     process.env.GITHUB_OUTPUT = file;
+    delete process.env.GITHUB_STEP_SUMMARY;
 
-    engine.writeActionOutputs({ changed: false, summary: 'nothing to do' });
+    engine.writeActionOutputs(sampleSummary());
+
+    const lines = readFileSync(file, 'utf8').split('\n');
+    const jsonLine = lines[2];
+    expect(() => JSON.parse(jsonLine)).not.toThrow();
+    const parsed = JSON.parse(jsonLine);
+    expect(parsed.schema_version).toBe(1);
+    expect(parsed.result).toBe('success');
+    expect(parsed.code).toBe('synced');
+  });
+
+  it('appends rather than overwrites, keeping earlier step outputs', () => {
+    const file = makeFile('earlier=kept\n');
+    process.env.GITHUB_OUTPUT = file;
+    delete process.env.GITHUB_STEP_SUMMARY;
+
+    engine.writeActionOutputs(engine.buildRunSummary({
+      result: 'no_op', code: 'missing_credentials', changed: false,
+      startedAt: 't0', finishedAt: 't0', detail: 'nothing to do', secrets: [],
+    }));
 
     const content = readFileSync(file, 'utf8');
     expect(content.startsWith('earlier=kept\n')).toBe(true);
     expect(content).toContain('changed=false');
   });
 
-  it('keeps multi-line summaries inside the heredoc block', () => {
-    const file = makeOutputFile();
-    process.env.GITHUB_OUTPUT = file;
-
-    engine.writeActionOutputs({ changed: false, summary: 'line one\nline two' });
-
-    expect(readFileSync(file, 'utf8')).toBe(
-      'changed=false\n' +
-      'summary<<NOTIONGIT_SYNC_SUMMARY_EOF\n' +
-      'line one\nline two\n' +
-      'NOTIONGIT_SYNC_SUMMARY_EOF\n'
-    );
-  });
-
-  it('is a no-op writer (but still logs) when GITHUB_OUTPUT is unset', () => {
+  it('is a no-op GITHUB_OUTPUT/GITHUB_STEP_SUMMARY writer (but still logs) when both are unset', () => {
     delete process.env.GITHUB_OUTPUT;
-    expect(() => engine.writeActionOutputs({ changed: false, summary: 'x' })).not.toThrow();
+    delete process.env.GITHUB_STEP_SUMMARY;
+    expect(() => engine.writeActionOutputs(sampleSummary())).not.toThrow();
   });
 
-  it('never writes the Notion token into outputs', () => {
-    const file = makeOutputFile();
-    process.env.GITHUB_OUTPUT = file;
+  it('appends a Markdown rendering to GITHUB_STEP_SUMMARY when set', () => {
+    delete process.env.GITHUB_OUTPUT;
+    const stepFile = makeFile('# earlier step\n');
+    process.env.GITHUB_STEP_SUMMARY = stepFile;
 
-    engine.writeActionOutputs({ changed: true, summary: 'pages: 1 created' });
+    engine.writeActionOutputs(sampleSummary());
 
-    expect(readFileSync(file, 'utf8')).not.toContain('secret');
+    const content = readFileSync(stepFile, 'utf8');
+    expect(content.startsWith('# earlier step\n')).toBe(true);
+    expect(content).toContain('Notion → Jekyll sync');
+    expect(content).toContain('synced');
+  });
+
+  it('never writes the Notion token into GITHUB_OUTPUT or GITHUB_STEP_SUMMARY', () => {
+    const outFile  = makeFile();
+    const stepFile = makeFile();
+    process.env.GITHUB_OUTPUT = outFile;
+    process.env.GITHUB_STEP_SUMMARY = stepFile;
+
+    engine.writeActionOutputs(engine.buildRunSummary({
+      result: 'failure', code: 'sync_error', changed: false,
+      startedAt: 't0', finishedAt: 't1',
+      detail: 'sync failed: token was rejected',
+      secrets: ['secret-test-token'],
+    }));
+
+    expect(readFileSync(outFile, 'utf8')).not.toContain('secret-test-token');
+    expect(readFileSync(stepFile, 'utf8')).not.toContain('secret-test-token');
   });
 
   it('restores the environment', () => {
     if (originalGithubOutput === undefined) delete process.env.GITHUB_OUTPUT;
     else process.env.GITHUB_OUTPUT = originalGithubOutput;
+    if (originalStepSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+    else process.env.GITHUB_STEP_SUMMARY = originalStepSummary;
 
     for (const dir of tmpFiles) rmSync(dir, { recursive: true, force: true });
   });
