@@ -323,6 +323,22 @@ tests even if `git diff` were skipped. `test/run-summary-schema.test.js`
 validates a representative payload for every terminal outcome against
 [`schema/run-summary.v1.json`](schema/run-summary.v1.json) and covers secret
 redaction — see [`docs/run-summary-schema.md`](docs/run-summary-schema.md).
+`test/network-contract.test.js` pins the network contract
+([`SECURITY.md`](SECURITY.md)): the only endpoint hosts in the engine and
+bundle, the single runtime dependency, the allowed `uses:` steps, and that
+`SECURITY.md` itself stays in sync with those allowlists.
+
+## Security & network contract
+
+Where your Notion token and content can and cannot go — the complete list of
+outbound destinations, inputs, files written, logging/redaction behavior, and
+retention — is documented in [`SECURITY.md`](SECURITY.md). The engine's only
+endpoint is the Notion API (read-only); there is no telemetry of any kind.
+The contract is enforced by
+[`test/network-contract.test.js`](test/network-contract.test.js), which fails
+CI on any undeclared endpoint, dependency, or Action reference, and
+[`SECURITY.md`](SECURITY.md) carries the maintainers' checklist for reviewing
+future dependency changes.
 
 ## Releasing
 

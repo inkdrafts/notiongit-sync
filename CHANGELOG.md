@@ -23,6 +23,15 @@ workflow refuses to tag a version with no matching section here.
 
 ### Added
 
+- A [network & data-handling contract](SECURITY.md): the complete list of
+  outbound destinations (the Notion API, read-only — and nothing else in the
+  engine), every input and where it goes, files written, logging/redaction
+  behavior, and retention. Audited the source, the committed `dist/` bundle,
+  and all dependencies for undeclared network clients — the bundle's only
+  remote host is `api.notion.com` (plus two inert `@notionhq/client`
+  package-metadata strings). [`test/network-contract.test.js`](test/network-contract.test.js)
+  enforces the allowlists in CI, and SECURITY.md adds a maintainers'
+  checklist for reviewing future dependency changes.
 - Every terminal path — including a bulk-delete guard trip and an unexpected
   sync error, which previously exited with no outputs at all — now emits a
   run summary. `code` names the specific outcome (`synced`,
