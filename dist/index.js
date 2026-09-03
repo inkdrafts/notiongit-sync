@@ -1880,7 +1880,15 @@ Fatal: ${err.message}`);
     redact,
     buildRunSummary,
     renderStepSummaryMarkdown,
-    writeActionOutputs
+    writeActionOutputs,
+    richTextToMarkdown,
+    blockToMarkdown,
+    blocksToMarkdown,
+    titleToSlug,
+    typeToLayout,
+    buildPageFrontMatter,
+    buildPostFrontMatter,
+    postFilename
   };
 });
 export default require_sync_notion();

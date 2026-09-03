@@ -312,13 +312,17 @@ against a fake Notion API served on `localhost` (`NOTION_BASE_URL`) and a
 throwaway site (`SITE_ROOT`), with exactly the environment the `action.yml`
 step sets — proving input mapping, boolean normalization, `$GITHUB_OUTPUT`
 and `$GITHUB_STEP_SUMMARY` emission, the bulk-delete guard, a simulated
-Notion API failure, and the legacy posts-only fallback end to end, with no
-network access and no real workspace data. `test/dist.test.js` runs the same
-kind of check directly against the committed `dist/index.js` bundle, so a
-stale or miscompiled bundle fails tests even if `git diff` were skipped.
-`test/run-summary-schema.test.js` validates a representative payload for
-every terminal outcome against [`schema/run-summary.v1.json`](schema/run-summary.v1.json)
-and covers secret redaction — see [`docs/run-summary-schema.md`](docs/run-summary-schema.md).
+Notion API failure, Notion's `has_more`/`next_cursor` pagination, and the
+legacy posts-only fallback end to end, with no network access and no real
+workspace data. `test/conversion.test.js` unit-tests the pure Notion →
+Markdown/front-matter conversion logic (rich text, every block type, list
+grouping, slugging) directly, with no subprocess or fake server needed.
+`test/dist.test.js` runs the same kind of check directly against the
+committed `dist/index.js` bundle, so a stale or miscompiled bundle fails
+tests even if `git diff` were skipped. `test/run-summary-schema.test.js`
+validates a representative payload for every terminal outcome against
+[`schema/run-summary.v1.json`](schema/run-summary.v1.json) and covers secret
+redaction — see [`docs/run-summary-schema.md`](docs/run-summary-schema.md).
 
 ## Releasing
 
