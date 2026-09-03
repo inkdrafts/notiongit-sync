@@ -24,6 +24,9 @@ const TOKEN = 'secret-test-token-never-print-me';
 const PAGES_DB = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const POSTS_DB = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
 const LEGACY_POSTS_DB = 'cccccccc-3333-4333-8333-cccccccccccc';
+// Queried by the "API failure" scenario below: the fake server answers this
+// id with a real Notion-shaped error response instead of a result list.
+const FAILING_DB = '99999999-9999-4999-8999-999999999999';
 const HOME_ID  = 'dddddddd-4444-4444-8444-dddddddddddd';
 const ABOUT_ID = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const POST_ID  = 'ffffffff-6666-4666-8666-ffffffffffff';
@@ -125,6 +128,18 @@ beforeAll(() => {
 
       const dbQuery = url.pathname.match(/^\/v1\/databases\/([^/]+)\/query$/);
       if (dbQuery && req.method === 'POST') {
+        if (dbQuery[1] === FAILING_DB) {
+          // Shaped like a real Notion API error: @notionhq/client surfaces
+          // `message` verbatim on the thrown APIResponseError, and Notion's
+          // real "not found" message echoes the database ID back — exactly
+          // the kind of text the run summary's redaction has to catch.
+          return Response.json({
+            object: 'error',
+            status: 404,
+            code: 'object_not_found',
+            message: `Could not find database with ID: ${FAILING_DB}. Make sure the relevant pages and databases are shared with your integration.`,
+          }, { status: 404 });
+        }
         const rows = dbQuery[1] === PAGES_DB ? state.pages
                    : dbQuery[1] === POSTS_DB || dbQuery[1] === LEGACY_POSTS_DB ? state.posts
                    : [];
@@ -360,21 +375,37 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(outputs.summary).toContain('0 updated');
   });
 
-  it('bulk-delete guard aborts on zero published rows, deletes nothing, and emits no outputs', async () => {
+  it('bulk-delete guard aborts on zero published rows, deletes nothing, but still emits a failure run summary', async () => {
     state.pages = []; // "misread": every tracked page looks unpublished
     const aboutPath = path.join(site, '_pages', 'about-renamed.md');
     const before = readFileSync(aboutPath, 'utf8');
-    const guardOutFile = makeOutputFile();
+    const guardOutFile  = makeOutputFile();
+    const stepSummaryFile = makeOutputFile();
 
-    const result = await runEngine({ ...env, GITHUB_OUTPUT: guardOutFile });
+    const result = await runEngine({ ...env, GITHUB_OUTPUT: guardOutFile, GITHUB_STEP_SUMMARY: stepSummaryFile });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('ABORT');
     expect(result.stderr).toContain('bulk-delete guard');
     expect(readFileSync(aboutPath, 'utf8')).toBe(before); // untouched
 
-    // The run didn't finish, so the documented "changed"/"summary" contract
-    // (empty on failure) holds — no outputs, not even a stale/misleading one.
-    expect(readFileSync(guardOutFile, 'utf8')).toBe('');
+    // The run didn't finish a section, so pages/posts/data_files are the
+    // documented null fallback — but every terminal path still emits a
+    // parseable summary, not empty output.
+    const outputs = parseGithubOutput(readFileSync(guardOutFile, 'utf8'));
+    expect(outputs.changed).toBe('false');
+    const summary = JSON.parse(outputs.summary);
+    expect(summary.schema_version).toBe(1);
+    expect(summary.result).toBe('failure');
+    expect(summary.code).toBe('bulk_delete_guard');
+    expect(summary.pages).toBeNull();
+    expect(summary.posts).toBeNull();
+    expect(summary.data_files).toBeNull();
+    expect(summary.detail).not.toContain('about-renamed'); // no filenames — counts only
+    expect(summary.detail).toContain('pages');
+
+    const stepSummary = readFileSync(stepSummaryFile, 'utf8');
+    expect(stepSummary).toContain('bulk_delete_guard');
+    expect(stepSummary).not.toContain('about-renamed');
   });
 
   it('bulk-delete guard also aborts on a ratio breach with multiple published rows (not just zero)', async () => {
@@ -416,9 +447,47 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     for (const { slug } of extraPages) {
       expect(existsSync(path.join(ratioSite, '_pages', `${slug}.md`))).toBe(true); // untouched
     }
-    expect(readFileSync(ratioOutFile, 'utf8')).toBe('');
+
+    const outputs = parseGithubOutput(readFileSync(ratioOutFile, 'utf8'));
+    expect(outputs.changed).toBe('false');
+    const summary = JSON.parse(outputs.summary);
+    expect(summary.result).toBe('failure');
+    expect(summary.code).toBe('bulk_delete_guard');
+    expect(summary.detail).toContain('75%');
+    expect(summary.detail).not.toContain('extra-a'); // no filenames — counts only
 
     state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
+  });
+
+  it('a Notion API failure aborts the run and reports code=sync_error with the database ID redacted', async () => {
+    const failSite = makeSite();
+    const failOutFile = makeOutputFile();
+    const failStepSummaryFile = makeOutputFile();
+
+    const result = await runEngine({
+      ...baseEnv(failSite, { NOTION_PAGES_DATABASE_ID: FAILING_DB, NOTION_POSTS_DATABASE_ID: '' }),
+      GITHUB_OUTPUT: failOutFile,
+      GITHUB_STEP_SUMMARY: failStepSummaryFile,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('Fatal');
+    // The query fails before any page is written — _pages/ may exist (it's
+    // created up front) but stays empty.
+    expect(existsSync(path.join(failSite, '_pages', 'about.md'))).toBe(false);
+
+    const outputs = parseGithubOutput(readFileSync(failOutFile, 'utf8'));
+    expect(outputs.changed).toBe('false');
+    const summary = JSON.parse(outputs.summary);
+    expect(summary.result).toBe('failure');
+    expect(summary.code).toBe('sync_error');
+    expect(summary.pages).toBeNull();
+    expect(summary.detail).toContain('[redacted]');
+    expect(summary.detail).not.toContain(FAILING_DB);
+
+    const stepSummaryText = readFileSync(failStepSummaryFile, 'utf8');
+    expect(stepSummaryText).not.toContain(FAILING_DB);
+    expect(stepSummaryText).toContain('[redacted]');
   });
 
   it('allow_bulk_delete=true (any case) pushes the deletion through', async () => {

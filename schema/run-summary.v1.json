@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/inkdrafts/notiongit-sync/blob/main/schema/run-summary.v1.json",
+  "title": "notiongit-sync run summary",
+  "description": "Machine-readable summary of one notiongit-sync run. See ../docs/run-summary-schema.md for the field-by-field guide, the result/code table and example payloads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result",
+    "code",
+    "changed",
+    "started_at",
+    "finished_at",
+    "pages",
+    "posts",
+    "data_files",
+    "detail"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Version of this schema. 1 for every payload this document describes; bumped only for a breaking change to this shape.",
+      "const": 1
+    },
+    "result": {
+      "description": "Coarse, stable outcome of the run.",
+      "enum": ["success", "no_op", "failure"]
+    },
+    "code": {
+      "description": "Specific, machine-readable reason for `result`. New codes may be added within schema_version 1 without a version bump; a consumer that sees an unrecognized code should fall back to handling it by `result` alone.",
+      "enum": ["synced", "missing_credentials", "bulk_delete_guard", "sync_error", "row_errors"]
+    },
+    "changed": {
+      "description": "true when any tracked file (_pages/, _posts/, _data/nav.yml, _data/home.yml, or the managed lines of _config.yml) was created, updated, renamed or deleted this run. Independent of `result`: a row_errors failure can still report changed:true if some rows succeeded before another row failed. Always false for no_op and every other failure code, where nothing was ever written.",
+      "type": "boolean"
+    },
+    "started_at": {
+      "description": "UTC timestamp, ISO 8601, when this run began (before any Notion API call).",
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_at": {
+      "description": "UTC timestamp, ISO 8601, when this run reached its terminal state.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "pages": { "$ref": "#/$defs/sectionCounts" },
+    "posts": { "$ref": "#/$defs/sectionCounts" },
+    "data_files": { "$ref": "#/$defs/dataFiles" },
+    "detail": {
+      "description": "Safe, human-readable, single-line detail: counts and filenames of generated files only. Never contains a Notion token, database ID, raw API response, page title/body, or stack trace — any error text that could echo one is redacted to \"[redacted]\" before it reaches this field.",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "sectionCounts": {
+      "description": "Counts for one database section (pages or posts), or null when that section didn't run this time — either because it aborted before finishing (missing_credentials, bulk_delete_guard, sync_error all leave both pages and posts null) or, on an otherwise-successful run, because that database simply isn't configured (a posts-only or pages-only setup leaves the other one null). A documented fallback either way, not a missing value.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["created", "updated", "renamed", "deleted", "unchanged", "errors"],
+          "properties": {
+            "created":   { "type": "integer", "minimum": 0 },
+            "updated":   { "type": "integer", "minimum": 0 },
+            "renamed":   { "type": "integer", "minimum": 0 },
+            "deleted":   { "type": "integer", "minimum": 0 },
+            "unchanged": { "type": "integer", "minimum": 0 },
+            "errors":    { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "dataFiles": {
+      "description": "Which of the three shared data/config files were rewritten this run, or null only when no section ran at all (a run that aborted before finishing any section). Whenever at least one section ran — even a posts-only run, which never touches these files — this is real data, not a fallback: it can legitimately be all-false.",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nav", "home", "config"],
+          "properties": {
+            "nav":    { "type": "boolean", "description": "_data/nav.yml" },
+            "home":   { "type": "boolean", "description": "_data/home.yml" },
+            "config": { "type": "boolean", "description": "the managed title/author.name lines of _config.yml" }
+          }
+        }
+      ]
+    }
+  }
+}

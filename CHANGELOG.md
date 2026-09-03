@@ -12,6 +12,29 @@ workflow refuses to tag a version with no matching section here.
 
 ## [Unreleased]
 
+### ⚠ Breaking
+
+- The `summary` Action output is now a compact JSON **run summary**
+  (`schema_version: 1`) instead of a one-line plain-text count. Any consumer
+  workflow that parses `summary` as plain text must be updated. See
+  [`docs/run-summary-schema.md`](docs/run-summary-schema.md) for the schema,
+  and [RELEASING.md](RELEASING.md#compatibility-promise) — this requires a
+  **major** version bump at the next release.
+
+### Added
+
+- Every terminal path — including a bulk-delete guard trip and an unexpected
+  sync error, which previously exited with no outputs at all — now emits a
+  run summary. `code` names the specific outcome (`synced`,
+  `missing_credentials`, `bulk_delete_guard`, `sync_error`, `row_errors`);
+  `pages`/`posts`/`data_files` are `null` (a documented fallback) either when
+  that section wasn't configured or when the run didn't get far enough to
+  produce real counts.
+- A Markdown rendering of the same run summary is appended to
+  `$GITHUB_STEP_SUMMARY` when the runner sets it, for the Actions run page.
+- [`schema/run-summary.v1.json`](schema/run-summary.v1.json) — the formal,
+  versioned JSON Schema for the run summary.
+
 ## [1.0.0] - 2026-09-02
 
 Initial release of `notiongit-sync` as a reusable Bun GitHub Action.

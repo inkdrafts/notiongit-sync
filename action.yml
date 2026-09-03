@@ -52,13 +52,19 @@ outputs:
     description: >-
       "true" when any tracked file was created, updated, renamed or deleted
       this run — including _data/nav.yml, _data/home.yml and the managed lines
-      of _config.yml. Empty when the run failed before finishing.
+      of _config.yml. Independent of success/failure: a run that fails partway
+      through (some rows errored) can still report "true" for the files it
+      did write before failing. "false" when nothing was ever written. Every
+      terminal outcome emits this output.
     value: ${{ steps.sync.outputs.changed }}
   summary:
     description: >-
-      One-line, non-secret count of what the sync did, e.g.
-      "pages: 1 created, 0 updated, 0 renamed, 0 deleted, 2 unchanged
-      (nav.yml updated); posts: ...".
+      Compact, non-secret JSON run summary (schema_version 1) — the same
+      contract for every terminal outcome (success, no-op, a guarded
+      deletion, or an unexpected sync error). See docs/run-summary-schema.md
+      for the field reference and schema/run-summary.v1.json for the formal
+      schema. A human-readable Markdown rendering of the same data is also appended
+      to $GITHUB_STEP_SUMMARY.
     value: ${{ steps.sync.outputs.summary }}
 
 runs:

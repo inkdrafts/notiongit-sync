@@ -8,9 +8,11 @@ network calls beyond the Notion API, no site content of its own.
 
 > **Status:** the repository contains the engine as plain CommonJS source (the
 > imported production script, plus the input/output plumbing the Action wrapper
-> needs), the `action.yml` composite wrapper, a committed `dist/` bundle so
-> consumers never run `bun install`, and the release process that publishes
-> `vX.Y.Z` tags and moves `v1` — see [Releasing](#releasing) below.
+> needs), the `action.yml` composite wrapper, a versioned, machine-readable
+> [run summary](docs/run-summary-schema.md) published on every run, a
+> committed `dist/` bundle so consumers never run `bun install`, and the
+> release process that publishes `vX.Y.Z` tags and moves `v1` — see
+> [Releasing](#releasing) below.
 
 ## Import provenance
 
@@ -92,6 +94,7 @@ stale; never hand-edit anything under `dist/`.
 | `SITE_ROOT` | No | Root of the Jekyll site to write into. Default: the parent of `scripts/`. The Action wrapper sets it to `$GITHUB_WORKSPACE`. |
 | `NOTION_BASE_URL` | No | Test hook: overrides the Notion API origin (`https://api.notion.com` by default) so the local harness can serve a fake API. Never set in production. |
 | `GITHUB_OUTPUT` | No | Set by the runner when the engine runs as an Action step; the engine appends the `changed` / `summary` outputs (below) to it. |
+| `GITHUB_STEP_SUMMARY` | No | Set by the runner for every step; the engine appends a Markdown rendering of the run summary (below) to it. |
 
 At least one of `NOTION_PAGES_DATABASE_ID` / `NOTION_POSTS_DATABASE_ID` (or the
 legacy `NOTION_DATABASE_ID`) must be set alongside `NOTION_TOKEN`. If neither
@@ -197,18 +200,20 @@ A newly generated repository can receive its first scheduled run before
 provisioning has written `NOTION_TOKEN` / the database ID(s) — that must not
 look like a broken Action to a non-developer. So when `NOTION_TOKEN` is
 missing, or neither database ID is set (absent, empty, or whitespace-only in
-either case), the engine exits 0 with `changed=false` and a one-line summary
-naming the missing configuration key (e.g. `skipped: NOTION_TOKEN environment
-variable is not set.`) — before constructing the Notion client or touching any
-generated file. It never reveals which secret value was present, only the name
-of what's missing.
+either case), the engine exits 0 with `changed=false` and a run summary
+(`code: "missing_credentials"`) whose `detail` names the missing
+configuration key (e.g. `skipped: NOTION_TOKEN environment variable is not
+set.`) — before constructing the Notion client or touching any generated
+file. It never reveals which secret value was present, only the name of
+what's missing.
 
 ### Exit codes
 
 `0` — clean sync (possibly all-unchanged), or a no-op skip when Notion
 credentials aren't configured yet (above). `1` — a database query failed, any
 per-row error occurred, or the bulk-delete guard tripped. The caller (the
-site's workflow) decides what to commit.
+site's workflow) decides what to commit. Every one of these outcomes emits a
+run summary (above) — a non-zero exit never means the outputs are empty.
 
 ## Usage as a GitHub Action
 
@@ -268,11 +273,20 @@ jobs:
 
 | Output | Meaning |
 |---|---|
-| `changed` | `"true"` when any tracked file was created, updated, renamed or deleted this run — including `_data/nav.yml`, `_data/home.yml` and the managed lines of `_config.yml`. `"false"` after a no-op run. Empty when the run failed before finishing (a failed step fails the job anyway). |
-| `summary` | One-line, non-secret count of what the run did, e.g. `pages: 1 created, 0 updated, 0 renamed, 0 deleted, 0 unchanged (nav.yml, home.yml, _config.yml updated); posts: 3 unchanged`. Counts only — tokens, database IDs and content titles are never included. |
+| `changed` | `"true"` when any tracked file was created, updated, renamed or deleted this run — including `_data/nav.yml`, `_data/home.yml` and the managed lines of `_config.yml`. Independent of success/failure: a `row_errors` failure can still be `"true"` if some rows were written before another row failed. `"false"` when nothing was ever written. Every terminal path emits this output (a failed step still fails the job). |
+| `summary` | Compact, non-secret JSON **run summary** (`schema_version: 1`), e.g. `{"schema_version":1,"result":"success","code":"synced","changed":true,...,"detail":"pages: 1 created, ..."}`. Every terminal outcome — success, no-op, a guarded deletion, or an unexpected sync error — emits one. See [`docs/run-summary-schema.md`](docs/run-summary-schema.md) for the full field reference, the `result`/`code` table, and example payloads for every outcome, and [`schema/run-summary.v1.json`](schema/run-summary.v1.json) for the formal schema. |
 
 The token is passed to the engine through its environment only; it is never
 echoed, logged, or written to outputs.
+
+### Run summary
+
+Beyond the `summary` output above, the engine also appends a Markdown
+rendering of the same run summary to `$GITHUB_STEP_SUMMARY` when the runner
+sets it (every step gets one) — a human-readable version on the Actions run
+page, alongside the machine-readable JSON. Both are built from the same data
+and carry the same non-secret guarantee. See
+[`docs/run-summary-schema.md`](docs/run-summary-schema.md) for details.
 
 ## Usage
 
@@ -297,14 +311,18 @@ The harness (`test/harness.test.js`) runs the engine as a real subprocess
 against a fake Notion API served on `localhost` (`NOTION_BASE_URL`) and a
 throwaway site (`SITE_ROOT`), with exactly the environment the `action.yml`
 step sets — proving input mapping, boolean normalization, `$GITHUB_OUTPUT`
-emission, the bulk-delete guard, Notion's `has_more`/`next_cursor` pagination,
-and the legacy posts-only fallback end to end, with no network access and no
-real workspace data. `test/conversion.test.js` unit-tests the pure Notion →
+and `$GITHUB_STEP_SUMMARY` emission, the bulk-delete guard, a simulated
+Notion API failure, Notion's `has_more`/`next_cursor` pagination, and the
+legacy posts-only fallback end to end, with no network access and no real
+workspace data. `test/conversion.test.js` unit-tests the pure Notion →
 Markdown/front-matter conversion logic (rich text, every block type, list
 grouping, slugging) directly, with no subprocess or fake server needed.
 `test/dist.test.js` runs the same kind of check directly against the
-committed `dist/index.js` bundle, so a stale or miscompiled bundle fails tests
-even if `git diff` were skipped.
+committed `dist/index.js` bundle, so a stale or miscompiled bundle fails
+tests even if `git diff` were skipped. `test/run-summary-schema.test.js`
+validates a representative payload for every terminal outcome against
+[`schema/run-summary.v1.json`](schema/run-summary.v1.json) and covers secret
+redaction — see [`docs/run-summary-schema.md`](docs/run-summary-schema.md).
 
 ## Releasing
 

@@ -1016,6 +1016,16 @@ var require_sync_notion = __commonJS(function(exports, module) {
 
   class ConfigError extends Error {
   }
+
+  class GuardError extends Error {
+    constructor(message, { label, staleCount, trackedCount, ratio }) {
+      super(message);
+      this.label = label;
+      this.staleCount = staleCount;
+      this.trackedCount = trackedCount;
+      this.ratio = ratio;
+    }
+  }
   function isTrue(value) {
     return String(value ?? "").trim().toLowerCase() === "true";
   }
@@ -1224,7 +1234,12 @@ ${code}
 
 ` + `   Nothing was changed. Check the database in Notion. If the deletion is real,
 ` + `   re-run this workflow with ALLOW_BULK_DELETE=true.`);
-      throw new Error(`bulk-delete guard tripped for ${label}`);
+      throw new GuardError(`bulk-delete guard tripped for ${label}`, {
+        label,
+        staleCount: stale.length,
+        trackedCount: tracked,
+        ratio
+      });
     }
     if (suspicious) {
       console.log(`
@@ -1680,21 +1695,96 @@ ${body}
       parts.push("no sections synced");
     return { changed, summary: parts.join("; ") };
   }
-  function writeActionOutputs(result) {
-    console.log(`
-   changed: ${result.changed}`);
-    console.log(`   summary: ${result.summary}`);
-    const outPath = process.env.GITHUB_OUTPUT;
-    if (!outPath)
-      return;
-    fs.appendFileSync(outPath, [
-      `changed=${result.changed}`,
-      "summary<<NOTIONGIT_SYNC_SUMMARY_EOF",
-      result.summary,
-      "NOTIONGIT_SYNC_SUMMARY_EOF",
+  var RUN_SUMMARY_SCHEMA_VERSION = 1;
+  function redact(text, secrets = []) {
+    let safe = String(text ?? "");
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      safe = safe.split(secret).join("[redacted]");
+    }
+    return safe;
+  }
+  function sectionCounts(sections, label) {
+    const section = sections.find((s) => s.label === label);
+    return section ? { ...section.stats } : null;
+  }
+  function dataFilesChanged(sections) {
+    return {
+      nav: sections.some((s) => s.navChanged),
+      home: sections.some((s) => s.homeChanged),
+      config: sections.some((s) => s.configChanged)
+    };
+  }
+  function buildRunSummary({ result, code, changed, startedAt, finishedAt, sections = [], detail, secrets }) {
+    if (!Array.isArray(secrets)) {
+      throw new TypeError("buildRunSummary: secrets must be an array (pass [] when none apply yet)");
+    }
+    return {
+      schema_version: RUN_SUMMARY_SCHEMA_VERSION,
+      result,
+      code,
+      changed,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      pages: sectionCounts(sections, "pages"),
+      posts: sectionCounts(sections, "posts"),
+      data_files: sections.length === 0 ? null : dataFilesChanged(sections),
+      detail: redact(detail, secrets)
+    };
+  }
+  var RESULT_ICON = { success: "\u2705", no_op: "\u23ED\uFE0F", failure: "\u274C" };
+  function renderStepSummaryMarkdown(summary) {
+    const lines = [
+      `### Notion \u2192 Jekyll sync \u2014 ${RESULT_ICON[summary.result] ?? ""} ${summary.result} (\`${summary.code}\`)`,
+      "",
+      `- **Changed:** ${summary.changed ? "yes" : "no"}`,
+      `- **Started:** ${summary.started_at}`,
+      `- **Finished:** ${summary.finished_at}`,
       ""
-    ].join(`
+    ];
+    if (summary.pages || summary.posts) {
+      lines.push("| Section | Created | Updated | Renamed | Deleted | Unchanged | Errors |");
+      lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+      for (const [label, counts] of [["Pages", summary.pages], ["Posts", summary.posts]]) {
+        if (!counts)
+          continue;
+        lines.push(`| ${label} | ${counts.created} | ${counts.updated} | ${counts.renamed} | ${counts.deleted} | ${counts.unchanged} | ${counts.errors} |`);
+      }
+      lines.push("");
+    }
+    if (summary.data_files) {
+      const updated = Object.entries({ "nav.yml": summary.data_files.nav, "home.yml": summary.data_files.home, "_config.yml": summary.data_files.config }).filter(([, changed]) => changed).map(([name]) => name);
+      lines.push(`**Data files updated:** ${updated.length ? updated.join(", ") : "none"}`);
+      lines.push("");
+    }
+    if (summary.detail)
+      lines.push(summary.detail);
+    return `${lines.join(`
+`)}
+`;
+  }
+  function writeActionOutputs(summary) {
+    const json = JSON.stringify(summary);
+    console.log(`
+   result: ${summary.result} (${summary.code})`);
+    console.log(`   changed: ${summary.changed}`);
+    console.log(`   summary: ${json}`);
+    const outPath = process.env.GITHUB_OUTPUT;
+    if (outPath) {
+      fs.appendFileSync(outPath, [
+        `changed=${summary.changed}`,
+        "summary<<NOTIONGIT_SYNC_SUMMARY_EOF",
+        json,
+        "NOTIONGIT_SYNC_SUMMARY_EOF",
+        ""
+      ].join(`
 `));
+    }
+    const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
+    if (stepSummaryPath) {
+      fs.appendFileSync(stepSummaryPath, renderStepSummaryMarkdown(summary));
+    }
   }
   async function run(config) {
     initRun(config);
@@ -1714,6 +1804,7 @@ ${body}
     return sections;
   }
   async function main() {
+    const startedAt = new Date().toISOString();
     let config;
     try {
       config = resolveConfig();
@@ -1722,21 +1813,50 @@ ${body}
         throw err;
       console.log(`Notion sync skipped: ${err.message}`);
       console.log("Configure NOTION_TOKEN and at least one of NOTION_PAGES_DATABASE_ID / " + "NOTION_POSTS_DATABASE_ID (repository secrets/variables), then re-run this workflow.");
-      writeActionOutputs({ changed: false, summary: `skipped: ${err.message}` });
+      writeActionOutputs(buildRunSummary({
+        result: "no_op",
+        code: "missing_credentials",
+        changed: false,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        detail: `skipped: ${err.message}`,
+        secrets: []
+      }));
       return;
     }
+    const secrets = [config.notionToken, config.pagesDbId, config.postsDbId].filter(Boolean);
     let sections;
     try {
       sections = await run(config);
     } catch (err) {
       console.error(`
 Fatal: ${err.message}`);
+      const isGuard = err instanceof GuardError;
+      writeActionOutputs(buildRunSummary({
+        result: "failure",
+        code: isGuard ? "bulk_delete_guard" : "sync_error",
+        changed: false,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        secrets,
+        detail: isGuard ? `bulk-delete guard tripped for ${err.label}: would delete ${err.staleCount} of ${err.trackedCount} tracked (${Math.round(err.ratio * 100)}%)` : `sync failed: ${err.message}`
+      }));
       process.exit(1);
     }
     const totalErrors = sections.reduce((n, s) => n + s.stats.errors, 0);
     console.log(`
 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
-    writeActionOutputs(buildActionResult(sections));
+    const { changed, summary: detail } = buildActionResult(sections);
+    writeActionOutputs(buildRunSummary({
+      result: totalErrors > 0 ? "failure" : "success",
+      code: totalErrors > 0 ? "row_errors" : "synced",
+      changed,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      sections,
+      detail,
+      secrets
+    }));
     if (totalErrors > 0) {
       console.error(`Sync finished with ${totalErrors} error(s). See above for details.`);
       process.exit(1);
@@ -1752,9 +1872,14 @@ Fatal: ${err.message}`);
   }
   module.exports = {
     ConfigError,
+    GuardError,
     isTrue,
     resolveConfig,
     buildActionResult,
+    RUN_SUMMARY_SCHEMA_VERSION,
+    redact,
+    buildRunSummary,
+    renderStepSummaryMarkdown,
     writeActionOutputs,
     richTextToMarkdown,
     blockToMarkdown,
