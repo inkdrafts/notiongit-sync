@@ -1,23 +1,22 @@
-name: CI
+name: Bun toolchain drift
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_call: # so release.yml can require the same checks before tagging
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: latest
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -25,8 +24,8 @@ jobs:
       - name: Rebuild dist/
         run: bun run build
 
-      - name: Fail if dist/ is stale (source changed without regenerating it)
-        run: git diff --exit-code
+      - name: Fail if latest Bun changes dist/
+        run: git diff --exit-code -- dist/index.js
 
       - name: Test
         run: bun test
