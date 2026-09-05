@@ -19,8 +19,8 @@ The complete list. Anything not here is a contract violation and a bug.
 | Destination | Who contacts it | When | What is sent |
 |---|---|---|---|
 | `https://api.notion.com/v1/` | The sync engine (the bundled `@notionhq/client`) | Every run | `NOTION_TOKEN` (as the `Authorization: Bearer` header), the database/page IDs from your inputs, and the `Notion-Version` header. Two read-only calls per synced row set: `POST /v1/databases/{id}/query` (filtered to `Status = Published`) and `GET /v1/blocks/{id}/children` (page bodies). Nothing is ever written to Notion. |
-| `bun.sh` (release archive) and GitHub (`oven-sh/bun` tags/releases) | The `oven-sh/setup-bun@v2` setup step | Once per run, before the sync | Nothing of yours — it downloads the Bun runtime itself and resolves which version to fetch. Your token, database IDs, and content are not involved. |
-| Your repository's own git remote | Your workflow's `actions/checkout@v4` and commit/push steps | Before and after the sync | Your synced content — this is the standard GitHub Actions flow in **your** repository, not this Action's code. |
+| `bun.sh` (release archive) and GitHub (`oven-sh/bun` tags/releases) | The `oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6` (v2.2.0) setup step | Once per run, before the sync | Nothing of yours — it downloads the Bun runtime itself and resolves which version to fetch. Your token, database IDs, and content are not involved. |
+| Your repository's own git remote | Your workflow's `actions/checkout@11d5960a326750d5838078e36cf38b85af677262` (v4.4.0) and commit/push steps | Before and after the sync | Your synced content — this is the standard GitHub Actions flow in **your** repository, not this Action's code. |
 
 That is all. Specifically:
 
@@ -44,8 +44,8 @@ That is all. Specifically:
 
 ## What runs, and as whom
 
-`action.yml` is a composite action with two steps: `oven-sh/setup-bun@v2`
-installs the runtime, then a single `bun dist/index.js` step runs the engine.
+`action.yml` is a composite action with two steps: `oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6`
+(v2.2.0) installs the runtime, then a single `bun dist/index.js` step runs the engine.
 Both run on GitHub-hosted runners inside your job, with only the
 permissions your workflow grants (`contents: write` if your commit step
 pushes; the Action itself needs nothing beyond what the checkout gave it).
@@ -135,7 +135,9 @@ audit (issue [#9](https://github.com/inkdrafts/notiongit-sync/issues/9)):
   the client's request to its configured prefix URL (`https://api.notion.com/v1/`).
 - The engine source imports `fs` and `path` (plus the client) and nothing
   network-facing; it makes no `fetch` calls of its own.
-- `action.yml` references exactly one third-party action: `oven-sh/setup-bun@v2`.
+- `action.yml` references exactly one third-party action:
+  `oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6` (v2.2.0, pinned
+  to the full commit SHA).
 - No InkDrafts, telemetry, or analytics reference exists in the engine or the
   bundle.
 
@@ -160,8 +162,9 @@ this document and the enforcement test in the same PR. Before merging:
    `test/network-contract.test.js` allowlists — the test must *fail first*,
    then pass because you consciously updated it.
 2. **New `uses:` step in `action.yml` or the workflows?** Pin it to a full
-   version, check what it downloads and what it uploads, and add it to this
-   document's destinations table.
+   commit SHA with the version in a trailing comment
+   (`owner/action@<40-hex-sha> # vX.Y.Z`), check what it downloads and what it
+   uploads, and add it to this document's destinations table.
 3. **New environment variable or input?** Add it to the inputs table with
    where it goes. Anything that can redirect a network destination (as
    `NOTION_BASE_URL` can) must be documented as a test hook and never set by

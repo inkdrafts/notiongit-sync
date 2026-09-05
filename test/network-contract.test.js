@@ -27,11 +27,10 @@ const NOTION_API_HOST = 'api.notion.com';
 /** Modules the engine source may require — the client, plus stdlib file/path. */
 const ENGINE_REQUIRE_ALLOWLIST = new Set(['@notionhq/client', 'fs', 'path']);
 
-/** Third-party actions/workflows allowed in action.yml and our own workflows. */
+/** Executable `uses:` steps allowed in action.yml and our own workflows. */
 const ACTIONS_USES_ALLOWLIST = new Set([
-  'inkdrafts/notiongit-sync@v1', // self-reference in action.yml's usage example comment
-  'oven-sh/setup-bun@v2', // downloads the Bun runtime from bun.sh — SECURITY.md destinations table
-  'actions/checkout@v4', // consumer-side standard; also used in this repo's own workflows
+  'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6', // pinned at v2.2.0; downloads the Bun runtime from bun.sh — SECURITY.md destinations table
+  'actions/checkout@11d5960a326750d5838078e36cf38b85af677262', // pinned at v4.4.0 — consumer-side standard; also used in this repo's own workflows
   './.github/workflows/ci.yml', // local reusable workflow call in release.yml — no network of its own
 ]);
 
@@ -44,8 +43,12 @@ function requireTargets(text) {
   return [...text.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]);
 }
 
-function usesTargets(text) {
-  return [...text.matchAll(/uses:\s*['"]?([^\s'"]+)/g)].map((m) => m[1]);
+function usesWithLines(text) {
+  return text.split('\n').flatMap((line) => {
+    if (line.trim().startsWith('#')) return [];
+    const match = line.match(/uses:\s*['"]?([^\s'"]+)/);
+    return match ? [{ value: match[1], line }] : [];
+  });
 }
 
 describe('network contract: dist bundle', () => {
@@ -134,11 +137,30 @@ describe('network contract: workflows and action.yml', () => {
   ];
 
   it('uses only allowlisted actions and local workflows', () => {
-    const used = files.flatMap((file) => usesTargets(readFileSync(file, 'utf8')));
+    const used = files.flatMap((file) => usesWithLines(readFileSync(file, 'utf8')).map(({ value }) => value));
     expect(used.length).toBeGreaterThan(0);
     for (const uses of used) {
       expect(ACTIONS_USES_ALLOWLIST.has(uses)).toBe(true);
     }
+  });
+
+  it('pins every third-party action to a full commit SHA with a version comment', () => {
+    const violations = [];
+    for (const file of files) {
+      const name = path.relative(REPO_ROOT, file);
+      for (const { value, line } of usesWithLines(readFileSync(file, 'utf8'))) {
+        if (value.startsWith('./')) continue;
+        if (!/@[0-9a-f]{40}$/.test(value)) {
+          violations.push(`${name}: '${value}' does not end in @ + 40 hex chars`);
+        } else {
+          const after = line.slice(line.indexOf(value) + value.length);
+          if (!/#\s*v?\d+(\.\d+)+/.test(after)) {
+            violations.push(`${name}: '${value}' has no '# vX.Y.Z' version comment after the SHA`);
+          }
+        }
+      }
+    }
+    expect(violations).toEqual([]);
   });
 });
 
@@ -149,7 +171,10 @@ describe('network contract: SECURITY.md stays in sync', () => {
     for (const host of [NOTION_API_HOST, 'bun.sh']) {
       expect(doc.includes(host)).toBe(true);
     }
-    for (const uses of ['oven-sh/setup-bun@v2', 'actions/checkout@v4']) {
+    for (const uses of [
+      'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6',
+      'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+    ]) {
       expect(doc.includes(uses)).toBe(true);
     }
   });

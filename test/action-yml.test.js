@@ -1,6 +1,7 @@
 /**
  * Contract tests for action.yml — the stable surface generated sites consume
- * as `uses: inkdrafts/notiongit-sync@v1`. These complement metadata validation
+ * as `uses: inkdrafts/notiongit-sync` pinned to a full commit SHA. These
+ * complement metadata validation
  * (actionlint) by pinning the input/output contract, the Bun setup and entry
  * point, and the rule that credentials only ever flow through env, never
  * through logs or outputs.
@@ -72,8 +73,8 @@ describe('action.yml steps', () => {
     expect(extra).toEqual([]);
   });
 
-  it('sets up Bun via oven-sh/setup-bun@v2', () => {
-    expect(setup.uses).toBe('oven-sh/setup-bun@v2');
+  it('sets up Bun via oven-sh/setup-bun, pinned at v2.2.0', () => {
+    expect(setup.uses).toBe('oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6');
   });
 
   it('runs the committed dist bundle with Bun under a step id', () => {

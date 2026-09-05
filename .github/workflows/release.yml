@@ -47,7 +47,7 @@ jobs:
       VERSION: ${{ inputs.version }}
       REF: ${{ github.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Releases are cut from main
         run: |
@@ -81,11 +81,11 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Same pin as ci.yml: dist/ must rebuild bit-for-bit, and bun's minifier
       # output changes between releases.
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.0
 
