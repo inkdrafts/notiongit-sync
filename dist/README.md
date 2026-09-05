@@ -8,8 +8,9 @@ scheduled sync.
 
 ## Why this is committed
 
-A composite GitHub Action runs from the tag/ref a consumer pins
-(`uses: inkdrafts/notiongit-sync@v1`), not from a package registry — there is no
+A composite GitHub Action runs from the ref a consumer pins
+(`uses: inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd`,
+i.e. v2.0.0), not from a package registry — there is no
 install step that could pull in dependencies for it. Committing the bundle is
 what makes the action self-contained at that ref.
 

@@ -2,7 +2,8 @@
 
 The Notion → Jekyll sync engine behind [InkDrafts](https://github.com/inkdrafts) —
 packaged to be consumed by generated sites as a reusable GitHub Action
-(`uses: inkdrafts/notiongit-sync@v1`). The engine reads two Notion databases and
+(`uses: inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd`,
+pinned to the v2.0.0 commit). The engine reads two Notion databases and
 writes the Jekyll files a GitHub Pages site needs. Nothing else: no telemetry, no
 network calls beyond the Notion API, no site content of its own.
 
@@ -62,7 +63,7 @@ Notion Posts DB  ─┘                             ─→  _pages/{slug}.md, _p
 [Bun](https://bun.sh) ≥ 1.1 is this project's runtime and package manager — plain
 CommonJS with no Node- or Bun-specific APIs, so the script runs unmodified
 (`bun scripts/sync-notion.js`; the Action wrapper installs Bun on GitHub-hosted
-runners via [`oven-sh/setup-bun@v2`](https://github.com/oven-sh/setup-bun)). The
+runners via [`oven-sh/setup-bun`](https://github.com/oven-sh/setup-bun), pinned to a full commit SHA). The
 script resolves the Jekyll site root as the parent of `scripts/`
 (`path.resolve(__dirname, '..')`) unless `SITE_ROOT` says otherwise — in this
 repository it is engine source, not a runnable site. When the Action wrapper runs
@@ -218,7 +219,7 @@ run summary (above) — a non-zero exit never means the outputs are empty.
 ## Usage as a GitHub Action
 
 ```yaml
-- uses: inkdrafts/notiongit-sync@v1
+- uses: inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd # v2.0.0
   id: sync
   with:
     notion_token: ${{ secrets.NOTION_TOKEN }}
@@ -240,8 +241,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: inkdrafts/notiongit-sync@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd # v2.0.0
         id: sync
         with:
           notion_token: ${{ secrets.NOTION_TOKEN }}
@@ -349,8 +350,11 @@ future dependency changes.
 
 ## Releasing
 
-Generated sites pin `uses: inkdrafts/notiongit-sync@v1` — a moving alias that
-always points at the latest `1.x.y` tag, while every full `vX.Y.Z` tag is
+Generated sites consume `uses: inkdrafts/notiongit-sync` pinned to an immutable
+full commit SHA (`@425b414ad8080ce2d309dfcac52c94f4557e21bd`, `# v2.0.0`), so a
+site's version moves only when the template bumps its pin. The `vX` major
+aliases still move on every release; consumers who prefer automatic updates can
+pin an alias instead, at their own risk, while full `vX.Y.Z` tags remain
 immutable once published. See [`RELEASING.md`](RELEASING.md) for the
 compatibility promise (what's patch/minor/major), the release workflow, and
 rollback instructions, and [`CHANGELOG.md`](CHANGELOG.md) for what shipped in
