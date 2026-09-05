@@ -1,13 +1,14 @@
 # Releasing
 
-Generated sites consume this action as `uses: inkdrafts/notiongit-sync@vN`,
-pinned to the major alias of the release they were provisioned with.
-Each `vN` major alias is a **moving alias**: it always points at the latest
-`N.x.y` tag, so a site pinned to `@v1` picks up 1.x fixes and additive features
-automatically, without a code change in the consumer repository, and a new
-major never moves an older major's alias. Full version tags (`vX.Y.Z`) are the
-opposite — **immutable**, once pushed. This document is the process that keeps
-that promise.
+Generated sites consume this action as
+`uses: inkdrafts/notiongit-sync@<40-hex-sha>`, pinned to an immutable commit of
+the release they were provisioned with; that pin moves only when the template
+bumps it. A site that pins a `vN` **major alias** instead gets a moving ref: it
+always points at the latest `N.x.y` tag, so a site pinned to `@v1` picks up 1.x
+fixes and additive features automatically, without a code change in the
+consumer repository, and a new major never moves an older major's alias. Full
+version tags (`vX.Y.Z`) are the opposite — **immutable**, once pushed. This
+document is the process that keeps that promise.
 
 ## Compatibility promise
 

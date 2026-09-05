@@ -2,7 +2,7 @@
 #
 # Consumers run this from their own site repository (after actions/checkout):
 #
-#     - uses: inkdrafts/notiongit-sync@v1
+#     - uses: inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd # v2.0.0
 #       with:
 #         notion_token: ${{ secrets.NOTION_TOKEN }}
 #         pages_database_id: ${{ vars.PAGES_DATABASE_ID }}
@@ -74,7 +74,7 @@ runs:
   using: 'composite'
   steps:
     - name: 'Set up Bun'
-      uses: oven-sh/setup-bun@v2
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
     - name: 'Run Notion → Jekyll sync'
       id: sync
