@@ -45,6 +45,11 @@
  *                                emits one.
  * When GITHUB_STEP_SUMMARY is set, the same run summary is also rendered as
  * Markdown and appended there, for the human-readable Actions run page.
+ * When RUN_SUMMARY_FILE is set (the Action wrapper points it at a
+ * runner-temp path), the same run summary JSON is also written to that file
+ * so the calling workflow can upload it as a durable artifact and read it
+ * back after the run (see docs/run-summary-schema.md). Unset in local runs,
+ * which behave exactly as they always have.
  */
 
 'use strict';
@@ -1059,11 +1064,26 @@ function renderStepSummaryMarkdown(summary) {
  * Echo the run's `changed` / `summary` result and, when GITHUB_OUTPUT is set
  * (the Action wrapper's sync step), append both as step outputs — `summary`
  * as compact JSON matching schema_version 1. When GITHUB_STEP_SUMMARY is set,
- * append the same data as Markdown. Both are non-secret by construction: the
- * `detail` field is redacted before this function ever sees it.
+ * append the same data as Markdown. When RUN_SUMMARY_FILE is set, write the
+ * same JSON to that file — the durable-artifact channel the calling workflow
+ * uploads. All three are non-secret by construction: the `detail` field is
+ * redacted before this function ever sees it.
  */
 function writeActionOutputs(summary) {
   const json = JSON.stringify(summary);
+
+  const runSummaryPath = process.env.RUN_SUMMARY_FILE;
+  if (runSummaryPath) {
+    try {
+      fs.mkdirSync(path.dirname(runSummaryPath), { recursive: true });
+      fs.writeFileSync(runSummaryPath, json + '\n');
+    } catch (err) {
+      // Contained on purpose: the file channel is observational, and a throw
+      // here would reach main().catch and flip a green run red.
+      console.warn(`   Warning: could not write the run summary file: ${err.message}`);
+    }
+  }
+
   console.log(`\n   result: ${summary.result} (${summary.code})`);
   console.log(`   changed: ${summary.changed}`);
   console.log(`   summary: ${json}`);
