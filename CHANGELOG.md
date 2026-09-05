@@ -12,6 +12,8 @@ workflow refuses to tag a version with no matching section here.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-05
+
 ### ⚠ Breaking
 
 - The `summary` Action output is now a compact JSON **run summary**
