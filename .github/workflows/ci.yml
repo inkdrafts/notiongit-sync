@@ -15,7 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # dist/ must rebuild bit-for-bit for the staleness check below to mean
+      # anything, and bun's minifier output changes between releases (the
+      # identifier-suffix style changed under us on 2026-09-05, breaking this
+      # check repo-wide). Pin the version that builds the committed bundle.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
