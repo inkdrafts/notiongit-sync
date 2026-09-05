@@ -64,7 +64,10 @@ outputs:
       deletion, or an unexpected sync error). See docs/run-summary-schema.md
       for the field reference and schema/run-summary.v1.json for the formal
       schema. A human-readable Markdown rendering of the same data is also appended
-      to $GITHUB_STEP_SUMMARY.
+      to $GITHUB_STEP_SUMMARY. The same JSON is additionally written to a
+      run-summary.json file under runner.temp so the calling workflow can
+      upload it as a durable artifact and read it after the run — see
+      docs/run-summary-schema.md for the read path.
     value: ${{ steps.sync.outputs.summary }}
 
 runs:
@@ -84,3 +87,4 @@ runs:
         NOTION_POSTS_DATABASE_ID: ${{ inputs.posts_database_id }}
         ALLOW_BULK_DELETE: ${{ inputs.allow_bulk_delete }}
         SITE_ROOT: ${{ github.workspace }}
+        RUN_SUMMARY_FILE: ${{ runner.temp }}/run-summary.json

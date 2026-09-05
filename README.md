@@ -288,6 +288,13 @@ page, alongside the machine-readable JSON. Both are built from the same data
 and carry the same non-secret guarantee. See
 [`docs/run-summary-schema.md`](docs/run-summary-schema.md) for details.
 
+Every terminal run also publishes the summary as a workflow artifact named
+`notiongit-run-summary` (file `run-summary.json`), so it stays readable after
+the run: the Action writes the JSON under `runner.temp` and the shipped
+template workflow uploads it. How to read it back through the Actions
+artifacts API — including the retention and fallback rules — is documented in
+[Reading the summary after the run](docs/run-summary-schema.md#reading-the-summary-after-the-run).
+
 ## Usage
 
 ```bash

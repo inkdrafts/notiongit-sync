@@ -86,14 +86,19 @@ describe('action.yml steps', () => {
     expect(existsSync(path.join(REPO_ROOT, 'dist', 'index.js'))).toBe(true);
   });
 
-  it('maps every input into the engine environment', () => {
+  it('maps every input and the run-summary artifact path into the engine environment', () => {
     expect(sync.env).toEqual({
       NOTION_TOKEN:              '${{ inputs.notion_token }}',
       NOTION_PAGES_DATABASE_ID:  '${{ inputs.pages_database_id }}',
       NOTION_POSTS_DATABASE_ID:  '${{ inputs.posts_database_id }}',
       ALLOW_BULK_DELETE:         '${{ inputs.allow_bulk_delete }}',
       SITE_ROOT:                 '${{ github.workspace }}',
+      RUN_SUMMARY_FILE:          '${{ runner.temp }}/run-summary.json',
     });
+  });
+
+  it('wires the run summary to the durable artifact path under runner.temp', () => {
+    expect(sync.env.RUN_SUMMARY_FILE).toBe('${{ runner.temp }}/run-summary.json');
   });
 
   it('has no undocumented keys on any step (e.g. continue-on-error, if, timeout-minutes)', () => {

@@ -1766,6 +1766,16 @@ ${body}
   }
   function writeActionOutputs(summary) {
     const json = JSON.stringify(summary);
+    const runSummaryPath = process.env.RUN_SUMMARY_FILE;
+    if (runSummaryPath) {
+      try {
+        fs.mkdirSync(path.dirname(runSummaryPath), { recursive: true });
+        fs.writeFileSync(runSummaryPath, json + `
+`);
+      } catch (err) {
+        console.warn(`   Warning: could not write the run summary file: ${err.message}`);
+      }
+    }
     console.log(`
    result: ${summary.result} (${summary.code})`);
     console.log(`   changed: ${summary.changed}`);
