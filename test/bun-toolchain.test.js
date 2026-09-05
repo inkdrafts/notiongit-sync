@@ -14,7 +14,7 @@ function loadWorkflow(name) {
 function bunSetup(workflow) {
   return Object.values(workflow.jobs)
     .flatMap((job) => job.steps ?? [])
-    .find((step) => step.uses === 'oven-sh/setup-bun@v2');
+    .find((step) => step.uses?.startsWith('oven-sh/setup-bun@'));
 }
 
 describe('Bun build toolchain', () => {
