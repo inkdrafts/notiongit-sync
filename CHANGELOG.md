@@ -12,6 +12,21 @@ workflow refuses to tag a version with no matching section here.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-05
+
+### Fixed
+
+- The Release workflow derived the moving alias from a hardcoded `v1`, so the
+  first 2.x release cut through Actions would have force-moved `v1` onto a
+  breaking version and silently upgraded every `@v1`-pinned site. The alias
+  step now creates and moves only its own major's alias (see
+  [#20](https://github.com/inkdrafts/notiongit-sync/issues/20), fixed in
+  [#23](https://github.com/inkdrafts/notiongit-sync/pull/23)), and
+  [`test/release-yml.test.js`](test/release-yml.test.js) pins the alias as
+  major-derived. [RELEASING.md](RELEASING.md) no longer describes generated
+  sites as consuming `@v1`; the intro now states the per-major alias model
+  they actually consume.
+
 ## [2.0.0] - 2026-09-05
 
 ### ⚠ Breaking

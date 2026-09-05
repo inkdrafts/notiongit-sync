@@ -1,6 +1,7 @@
 # Releasing
 
-`notiongit-sync` is consumed by generated sites as `uses: inkdrafts/notiongit-sync@v1`.
+Generated sites consume this action as `uses: inkdrafts/notiongit-sync@vN`,
+pinned to the major alias of the release they were provisioned with.
 Each `vN` major alias is a **moving alias**: it always points at the latest
 `N.x.y` tag, so a site pinned to `@v1` picks up 1.x fixes and additive features
 automatically, without a code change in the consumer repository, and a new
