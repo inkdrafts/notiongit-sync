@@ -11,8 +11,8 @@ network calls beyond the Notion API, no site content of its own.
 > needs), the `action.yml` composite wrapper, a versioned, machine-readable
 > [run summary](docs/run-summary-schema.md) published on every run, a
 > committed `dist/` bundle so consumers never run `bun install`, and the
-> release process that publishes `vX.Y.Z` tags and moves `v1` — see
-> [Releasing](#releasing) below.
+> release process that publishes `vX.Y.Z` tags and moves the release's major
+> alias — see [Releasing](#releasing) below.
 
 ## Import provenance
 

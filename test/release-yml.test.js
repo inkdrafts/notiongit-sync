@@ -61,7 +61,7 @@ describe('release.yml jobs', () => {
   });
 
   it('gates every tagging/publishing step on dry_run being false, and only those', () => {
-    const gated = ['Create the immutable version tag', 'Move the v1 alias to the new release', 'Publish the GitHub release'];
+    const gated = ['Create the immutable version tag', 'Move the major alias to the new release', 'Publish the GitHub release'];
     for (const step of workflow.jobs.release.steps) {
       if (gated.includes(step.name)) {
         expect(step.if).toBe('${{ !inputs.dry_run }}');
@@ -79,6 +79,14 @@ describe('release.yml jobs', () => {
     );
     expect(step.run).toContain('git ls-remote --exit-code --tags origin');
     expect(step.run).toContain('exit 1');
+  });
+
+  it('moves the alias derived from the released major, never a hardcoded v1', () => {
+    const step = workflow.jobs.release.steps.find((s) => (s.name ?? '').includes('alias'));
+    expect(step.run).toContain('MAJOR="${VERSION%%.*}"');
+    expect(step.run).toContain('git tag -f "v$MAJOR" "v$VERSION"');
+    expect(step.run).toContain('git push origin "refs/tags/v$MAJOR" --force');
+    expect(step.run).not.toContain('v1');
   });
 
   it('requires a matching CHANGELOG.md section before releasing', () => {

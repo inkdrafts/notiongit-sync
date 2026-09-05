@@ -1,7 +1,9 @@
-# Cuts an immutable vX.Y.Z release and moves the v1 alias — see RELEASING.md.
+# Cuts an immutable vX.Y.Z release and moves that major's alias — see RELEASING.md.
 #
-# Full-version tags are never recreated or moved once pushed; only v1 moves,
-# and only after the same checks CI runs on every push pass again here.
+# Full-version tags are never recreated or moved once pushed; the release
+# creates and moves only its own major's alias (v1 for a 1.x release, v2 for
+# a 2.x release), and only after the same checks CI runs on every push pass
+# again here.
 #
 # Usage: Actions -> Release -> Run workflow, on `main`, with:
 #   version: full semver to release, no leading v (e.g. 1.2.0)
@@ -116,11 +118,12 @@ jobs:
           git tag -a "v$VERSION" -m "v$VERSION"
           git push origin "refs/tags/v$VERSION"
 
-      - name: Move the v1 alias to the new release
+      - name: Move the major alias to the new release
         if: ${{ !inputs.dry_run }}
         run: |
-          git tag -f v1 "v$VERSION"
-          git push origin refs/tags/v1 --force
+          MAJOR="${VERSION%%.*}"
+          git tag -f "v$MAJOR" "v$VERSION"
+          git push origin "refs/tags/v$MAJOR" --force
 
       - name: Publish the GitHub release
         if: ${{ !inputs.dry_run }}
@@ -135,4 +138,4 @@ jobs:
           echo '---'
           cat RELEASE_NOTES.md
           echo '---'
-          echo "Re-run with dry_run=false to tag v$VERSION, move v1 to it, and publish the GitHub release."
+          echo "Re-run with dry_run=false to tag v$VERSION, move its major alias to it, and publish the GitHub release."
