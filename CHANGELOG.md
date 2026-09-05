@@ -32,6 +32,17 @@ workflow refuses to tag a version with no matching section here.
   produce real counts.
 - A Markdown rendering of the same run summary is appended to
   `$GITHUB_STEP_SUMMARY` when the runner sets it, for the Actions run page.
+- A durable artifact channel: the run summary is also written to the file
+  named by `RUN_SUMMARY_FILE` (the Action wrapper sets it to
+  `run-summary.json` under `runner.temp`), so the calling workflow can upload
+  it as a workflow artifact and read it after the run — the shipped template
+  workflow publishes it as the `notiongit-run-summary` artifact on every
+  terminal run. The channel is observational: a failed summary-file write is
+  a warning and never changes the run's exit code. See
+  ["Reading the summary after the run"](docs/run-summary-schema.md#reading-the-summary-after-the-run).
+  The `v1` tag predates the run-summary feature, so the next release must
+  still be a **major** bump for consumers to move off `@v1` and activate the
+  channel (per [RELEASING.md](RELEASING.md#compatibility-promise)).
 - [`schema/run-summary.v1.json`](schema/run-summary.v1.json) — the formal,
   versioned JSON Schema for the run summary.
 

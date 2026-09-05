@@ -6,12 +6,13 @@ what happened. It exists so the InkDrafts provisioning/status application (or
 any other caller) can tell a user what their site's last sync did without
 understanding the GitHub Actions interface.
 
-The same object is published two ways:
+The same object is published three ways:
 
 | Channel | Format | Audience |
 |---|---|---|
 | Action output `summary` | Compact (single-line) JSON matching this schema | Programmatic — the calling workflow, or anything that reads the step's outputs |
 | `$GITHUB_STEP_SUMMARY` | Markdown rendering of the same data | Human — shown on the Actions run page |
+| `notiongit-run-summary` artifact | the same compact JSON, byte-identical to the `summary` output, as `run-summary.json` inside the artifact zip | Programmatic, after the run — Actions artifacts API |
 
 The Action's other output, `changed` (`"true"`/`"false"`), is unchanged and
 documented in the [README](../README.md#outputs).
@@ -161,3 +162,51 @@ pages: 1 created, 0 updated, 0 renamed, 0 deleted, 2 unchanged (nav.yml, home.ym
 
 Parse the `summary` output for automation; read `$GITHUB_STEP_SUMMARY` (or the
 Actions UI) as a person.
+
+## Reading the summary after the run
+
+The `summary` output and the `$GITHUB_STEP_SUMMARY` rendering only exist
+inside the run — GitHub exposes no API to read either back. The third channel
+fixes that: the Action also writes the compact JSON to a `run-summary.json`
+file under `runner.temp` (the `RUN_SUMMARY_FILE` environment variable), and
+the shipped [template workflow](https://github.com/inkdrafts/notiongit-template)
+uploads it as a workflow artifact named `notiongit-run-summary`. The channel
+exists on **every terminal run** — success, no-op, or failure, including the
+runs that exit `1` — so a guarded deletion or a sync error is readable after
+the fact too.
+
+The binding is per run: each workflow run produces at most one artifact named
+`notiongit-run-summary`, keyed by its `run_id`. There is no stored "latest"
+pointer anywhere — derive it by listing runs and taking the newest one.
+
+Reading it takes Actions **read** permission on the site repository (the
+InkDrafts App's Actions write already covers that):
+
+1. `GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?name=notiongit-run-summary`
+   — take `artifacts[0]` when the list is non-empty and its `expired` is
+   `false`.
+2. `GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip` — responds
+   `302` to a signed URL; download that and unzip the single member,
+   `run-summary.json`.
+3. When there is nothing to read for a run,
+   `GET /repos/{owner}/{repo}/actions/runs/{run_id}` provides that run's
+   `conclusion` as the fallback signal.
+
+How long the artifact lives is governed by the site repository's
+artifact-retention setting — GitHub's default is 90 days. At the template's
+10-minute schedule that is on the order of 13,000 live artifacts of roughly
+2 KB per site, which is free storage on public repositories; artifacts past
+retention list with `expired: true` before they disappear entirely.
+
+Consumers, in order:
+
+1. An unrecognized `code` is handled by `result` alone (the rule above,
+   unchanged).
+2. No artifact for the run, or only expired ones, means fall back on that
+   run's `conclusion` — this covers runs that predate the channel and runs
+   past retention.
+3. A `schema_version` other than `1` means conclusion fallback plus an
+   "unsupported summary version" surface to the user.
+
+Never fabricate counts: a missing or unreadable summary is "no data", never
+success.
