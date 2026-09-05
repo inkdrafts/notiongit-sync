@@ -61,6 +61,24 @@ push (`.github/workflows/ci.yml`, invoked as a reusable workflow) succeeds
 again on the release commit, so a release can never ship with failing tests
 or a stale `dist/`.
 
+## Bumping a pinned action
+
+1. Resolve the release's commit SHA through the API and cross-check the peeled
+   tag ref — the API SHA must equal the `^{}` (peeled) entry (for a
+   lightweight tag, the tag ref itself). For a checkout bump:
+
+   ```bash
+   gh api repos/actions/checkout/commits/v7.0.1 --jq .sha
+   git ls-remote https://github.com/actions/checkout refs/tags/v7.0.1 'refs/tags/v7.0.1^{}'
+   ```
+
+2. Update every `owner/repo@<sha>` occurrence and its version comment in one
+   commit. Occurrences live in the workflows, `action.yml`, the docs
+   (`SECURITY.md`, `README.md`, `dist/README.md`), and the tests;
+   `test/pin-consistency.test.js` fails CI naming the file and stale value if
+   any straggler remains.
+3. Run `bun test` before pushing.
+
 ## Rollback
 
 Only major aliases ever move, so rollback is: point the released major's alias
