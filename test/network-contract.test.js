@@ -30,7 +30,7 @@ const ENGINE_REQUIRE_ALLOWLIST = new Set(['@notionhq/client', 'fs', 'path']);
 /** Executable `uses:` steps allowed in action.yml and our own workflows. */
 const ACTIONS_USES_ALLOWLIST = new Set([
   'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6', // pinned at v2.2.0; downloads the Bun runtime from bun.sh — SECURITY.md destinations table
-  'actions/checkout@11d5960a326750d5838078e36cf38b85af677262', // pinned at v4.4.0 — consumer-side standard; also used in this repo's own workflows
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', // pinned at v7.0.1; consumer-side standard; also used in this repo's own workflows
   './.github/workflows/ci.yml', // local reusable workflow call in release.yml — no network of its own
 ]);
 
@@ -173,7 +173,7 @@ describe('network contract: SECURITY.md stays in sync', () => {
     }
     for (const uses of [
       'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6',
-      'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
+      'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
     ]) {
       expect(doc.includes(uses)).toBe(true);
     }
