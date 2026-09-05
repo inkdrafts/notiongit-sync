@@ -1,11 +1,12 @@
 # Releasing
 
 `notiongit-sync` is consumed by generated sites as `uses: inkdrafts/notiongit-sync@v1`.
-`v1` is a **moving alias**: it always points at the latest `1.x.y` tag, so every
-site that provisioned with InkDrafts picks up fixes and additive features
-automatically, without a code change in the consumer repository. Full version
-tags (`vX.Y.Z`) are the opposite — **immutable**, once pushed. This document is
-the process that keeps that promise.
+Each `vN` major alias is a **moving alias**: it always points at the latest
+`N.x.y` tag, so a site pinned to `@v1` picks up 1.x fixes and additive features
+automatically, without a code change in the consumer repository, and a new
+major never moves an older major's alias. Full version tags (`vX.Y.Z`) are the
+opposite — **immutable**, once pushed. This document is the process that keeps
+that promise.
 
 ## Compatibility promise
 
@@ -48,7 +49,8 @@ unnecessary major bump.
      preconditions — without creating, pushing, or publishing anything.
 4. Once the dry run is green, run it again with `dry_run: false`. This:
    - creates the annotated, immutable tag `vX.Y.Z` and pushes it,
-   - force-moves the `v1` tag to that same commit and pushes it,
+   - creates the `vN` alias on the major's first release, then force-moves it
+     to that same commit and pushes it,
    - publishes a GitHub Release for `vX.Y.Z` using that version's changelog
      section as the release notes.
 
@@ -59,18 +61,19 @@ or a stale `dist/`.
 
 ## Rollback
 
-`v1` is the only ref that ever moves, so rollback is: point `v1` at an older,
-already-published `vX.Y.Z` tag. Never re-push or delete the full-version tag
-being rolled back from — it stays published as history.
+Only major aliases ever move, so rollback is: point the released major's alias
+at an older, already-published `vX.Y.Z` tag of that same major. Never re-push
+or delete the full-version tag being rolled back from — it stays published as
+history.
 
 ```bash
 git fetch origin --tags
-git tag -f v1 vX.Y.Z   # the known-good version to roll back to
-git push origin refs/tags/v1 --force
+git tag -f vN vX.Y.Z   # the known-good version to roll back to; N is X
+git push origin refs/tags/vN --force
 ```
 
 This requires push access to `notiongit-sync` and, if tag protection (below)
-is configured, an actor with bypass permission on the `v1`/major-alias rule.
+is configured, an actor with bypass permission on the major-alias rule.
 Consumers pick up the rollback on their next scheduled sync — nothing needs
 to change in a generated site's repository.
 
@@ -83,8 +86,8 @@ Create one in this repository's **Settings → Rules → Rulesets → New rulese
 New tag ruleset**:
 
 - **Target tags**: pattern `v*.*.*` (matches every `vX.Y.Z` tag; the required
-  dots mean it does **not** match `v1` — that alias must stay movable by the
-  release workflow).
+  dots mean it does **not** match any bare major alias — `v1`, `v2`, and so on —
+  which must stay movable by the release workflow).
 - **Restrict deletions** and **Block force pushes**: both enabled.
 - No bypass list, so not even an admin can move or delete a matching tag from
   outside this process.
