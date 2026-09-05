@@ -13,9 +13,13 @@
  * comes from a real workspace.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+
+const require = createRequire(import.meta.url);
+const { schema, validateAgainstSchema } = require('./support/run-summary-validator.js');
 
 const REPO_ROOT = path.resolve(import.meta.dir, '..');
 const TOKEN = 'secret-test-token-never-print-me';
@@ -27,6 +31,10 @@ const LEGACY_POSTS_DB = 'cccccccc-3333-4333-8333-cccccccccccc';
 // Queried by the "API failure" scenario below: the fake server answers this
 // id with a real Notion-shaped error response instead of a result list.
 const FAILING_DB = '99999999-9999-4999-8999-999999999999';
+// Queried by the "row errors" scenario below: the fake server answers this
+// page's block children with a real Notion-shaped error instead of a body,
+// while every other row syncs — the per-row failure behind code=row_errors.
+const ERRORING_PAGE_ID = '70707070-7070-4707-8707-707070707070';
 const HOME_ID  = 'dddddddd-4444-4444-8444-dddddddddddd';
 const ABOUT_ID = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee';
 const POST_ID  = 'ffffffff-6666-4666-8666-ffffffffffff';
@@ -150,6 +158,17 @@ beforeAll(() => {
 
       const blockChildren = url.pathname.match(/^\/v1\/blocks\/([^/]+)\/children$/);
       if (blockChildren && req.method === 'GET') {
+        if (blockChildren[1] === ERRORING_PAGE_ID) {
+          // Shaped like a real Notion API error the same way FAILING_DB is:
+          // the engine's per-row catch must turn it into counts in the run
+          // summary, never echo this message (which names the id).
+          return Response.json({
+            object: 'error',
+            status: 404,
+            code: 'object_not_found',
+            message: `Could not find block with ID: ${ERRORING_PAGE_ID}. Make sure the relevant pages and databases are shared with your integration.`,
+          }, { status: 404 });
+        }
         const items = state.blocks[blockChildren[1]] ?? [];
         const page  = paginate(items, url.searchParams.get('start_cursor'));
         return Response.json({ object: 'list', ...page });
@@ -187,6 +206,12 @@ function makeOutputFile() {
   return file;
 }
 
+function makeSummaryFile() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'notiongit-summary-'));
+  tempDirs.push(dir);
+  return path.join(dir, 'run-summary.json');
+}
+
 async function runEngine(env) {
   const proc = Bun.spawn(['bun', 'scripts/sync-notion.js'], {
     cwd: REPO_ROOT,
@@ -209,6 +234,7 @@ function baseEnv(siteRoot, overrides = {}) {
     NOTION_POSTS_DATABASE_ID: POSTS_DB,
     NOTION_BASE_URL: `http://127.0.0.1:${server.port}`,
     SITE_ROOT: siteRoot,
+    RUN_SUMMARY_FILE: makeSummaryFile(),
     ...overrides,
   };
 }
@@ -234,9 +260,20 @@ function parseGithubOutput(text) {
 }
 
 const outputsOf = async (env, file) => {
-  const result = await runEngine({ ...env, GITHUB_OUTPUT: file });
-  return { result, outputs: parseGithubOutput(readFileSync(file, 'utf8')) };
+  // A fresh artifact path per call: the shared `env` below is reused across
+  // scenarios, and each one's file assertions must read its own run.
+  const summaryFile = makeSummaryFile();
+  const result = await runEngine({ ...env, GITHUB_OUTPUT: file, RUN_SUMMARY_FILE: summaryFile });
+  return { result, outputs: parseGithubOutput(readFileSync(file, 'utf8')), summaryFile };
 };
+
+function readRunSummaryArtifact(file, expectedCode) {
+  expect(existsSync(file)).toBe(true);
+  const summary = JSON.parse(readFileSync(file, 'utf8'));
+  expect(() => validateAgainstSchema(schema, summary, schema.$defs)).not.toThrow();
+  expect(summary.code).toBe(expectedCode);
+  return summary;
+}
 
 // ─── Scenarios ────────────────────────────────────────────────────────────────
 
@@ -269,8 +306,8 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     ];
 
     for (const [, overrides, expectedMention] of cases) {
-      const outFile = makeOutputFile();
-      const { result, outputs } = await outputsOf(baseEnv(site, overrides), outFile);
+      const caseOutFile = makeOutputFile();
+      const { result, outputs, summaryFile } = await outputsOf(baseEnv(site, overrides), caseOutFile);
 
       // A no-op is not an error: exit 0, no stderr, no scary log lines.
       expect(result.exitCode).toBe(0);
@@ -285,20 +322,25 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
 
       // Never reveals a secret value, only names the missing key.
       expect(result.stdout + outputs.summary).not.toContain(TOKEN);
+
+      expect(readRunSummaryArtifact(summaryFile, 'missing_credentials'))
+        .toEqual(JSON.parse(outputs.summary));
     }
   });
 
   it('the no-op path also exits 0 without GITHUB_OUTPUT set (a plain local run)', async () => {
-    const result = await runEngine(baseEnv(site, { NOTION_TOKEN: '' }));
+    const localEnv = baseEnv(site, { NOTION_TOKEN: '' });
+    const result = await runEngine(localEnv);
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('Notion sync skipped');
     expect(result.stdout).toContain('NOTION_TOKEN');
     expect(existsSync(path.join(site, '_pages'))).toBe(false);
+    readRunSummaryArtifact(localEnv.RUN_SUMMARY_FILE, 'missing_credentials');
   });
 
   it('first sync writes the site and reports changed=true', async () => {
-    const { result, outputs } = await outputsOf(env, outFile);
+    const { result, outputs, summaryFile } = await outputsOf(env, outFile);
     expect(result.exitCode).toBe(0);
 
     // Pages: about.md with front matter, body and notion_id.
@@ -341,31 +383,35 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     const outFileText = readFileSync(outFile, 'utf8');
     expect(outFileText).not.toContain(TOKEN);
     expect(result.stdout + result.stderr).not.toContain(TOKEN);
+
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('re-sync with unchanged content reports changed=false', async () => {
-    const { result, outputs } = await outputsOf(env, outFile);
+    const { result, outputs, summaryFile } = await outputsOf(env, outFile);
     expect(result.exitCode).toBe(0);
     expect(outputs.changed).toBe('false');
     expect(outputs.summary).toContain('unchanged');
     expect(outputs.summary).not.toMatch(/[1-9]\d* (created|updated|renamed|deleted)/);
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('content edits in Notion flip changed back to true', async () => {
     state.blocks[ABOUT_ID] = [paragraph('Edited body paragraph.')];
 
-    const { result, outputs } = await outputsOf(env, outFile);
+    const { result, outputs, summaryFile } = await outputsOf(env, outFile);
     expect(result.exitCode).toBe(0);
     expect(outputs.changed).toBe('true');
     expect(outputs.summary).toContain('1 updated');
     expect(readFileSync(path.join(site, '_pages', 'about.md'), 'utf8'))
       .toContain('Edited body paragraph.');
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('slug renames move the file, report a rename, and are not also double-counted as updated', async () => {
     state.pages = [homeRow(), aboutRow('about-renamed')];
 
-    const { result, outputs } = await outputsOf(env, outFile);
+    const { result, outputs, summaryFile } = await outputsOf(env, outFile);
     expect(result.exitCode).toBe(0);
     expect(existsSync(path.join(site, '_pages', 'about.md'))).toBe(false);
     expect(existsSync(path.join(site, '_pages', 'about-renamed.md'))).toBe(true);
@@ -373,6 +419,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(outputs.summary).toContain('1 renamed');
     // A rename is one change, not two: it must not also count as "updated".
     expect(outputs.summary).toContain('0 updated');
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('bulk-delete guard aborts on zero published rows, deletes nothing, but still emits a failure run summary', async () => {
@@ -406,6 +453,9 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     const stepSummary = readFileSync(stepSummaryFile, 'utf8');
     expect(stepSummary).toContain('bulk_delete_guard');
     expect(stepSummary).not.toContain('about-renamed');
+
+    // exit 1, yet the artifact round-trips: it was written before process.exit.
+    expect(readRunSummaryArtifact(env.RUN_SUMMARY_FILE, 'bulk_delete_guard')).toEqual(summary);
   });
 
   it('bulk-delete guard also aborts on a ratio breach with multiple published rows (not just zero)', async () => {
@@ -455,6 +505,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(summary.code).toBe('bulk_delete_guard');
     expect(summary.detail).toContain('75%');
     expect(summary.detail).not.toContain('extra-a'); // no filenames — counts only
+    expect(readRunSummaryArtifact(seedEnv.RUN_SUMMARY_FILE, 'bulk_delete_guard')).toEqual(summary);
 
     state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
   });
@@ -464,11 +515,12 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     const failOutFile = makeOutputFile();
     const failStepSummaryFile = makeOutputFile();
 
-    const result = await runEngine({
+    const failEnv = {
       ...baseEnv(failSite, { NOTION_PAGES_DATABASE_ID: FAILING_DB, NOTION_POSTS_DATABASE_ID: '' }),
       GITHUB_OUTPUT: failOutFile,
       GITHUB_STEP_SUMMARY: failStepSummaryFile,
-    });
+    };
+    const result = await runEngine(failEnv);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain('Fatal');
@@ -488,12 +540,44 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     const stepSummaryText = readFileSync(failStepSummaryFile, 'utf8');
     expect(stepSummaryText).not.toContain(FAILING_DB);
     expect(stepSummaryText).toContain('[redacted]');
+
+    // exit 1, yet the artifact round-trips: it was written before process.exit.
+    expect(readRunSummaryArtifact(failEnv.RUN_SUMMARY_FILE, 'sync_error')).toEqual(summary);
+  });
+
+  it('a single failing row reports code=row_errors while the rest of the sync lands', async () => {
+    const rowErrorSite = makeSite();
+
+    const erroringRow = row(ERRORING_PAGE_ID, {
+      Title: titleProp('Erroring'),
+      Slug: textProp('erroring'),
+      Type: { select: { name: 'markdown' } },
+    });
+    state.pages = [homeRow(), aboutRow(), erroringRow];
+
+    const { result, outputs, summaryFile } = await outputsOf(baseEnv(rowErrorSite), makeOutputFile());
+
+    expect(result.exitCode).toBe(1);
+    expect(outputs.changed).toBe('true');
+    const summary = readRunSummaryArtifact(summaryFile, 'row_errors');
+    expect(summary.result).toBe('failure');
+    expect(summary.changed).toBe(true);
+    expect(summary.pages.errors).toBe(1);
+    expect(summary.pages.created).toBe(1); // about.md landed before the failing row
+    expect(summary.posts).not.toBeNull(); // the posts section still ran to completion
+    expect(existsSync(path.join(rowErrorSite, '_pages', 'about.md'))).toBe(true);
+    expect(existsSync(path.join(rowErrorSite, '_pages', 'erroring.md'))).toBe(false);
+    // detail carries counts only — never the failed row's id or error text.
+    expect(outputs.summary).not.toContain(ERRORING_PAGE_ID);
+    expect(summary).toEqual(JSON.parse(outputs.summary));
+
+    state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
   });
 
   it('allow_bulk_delete=true (any case) pushes the deletion through', async () => {
     state.pages = []; // same mass unpublish as the previous scenario
 
-    const { result, outputs } = await outputsOf(
+    const { result, outputs, summaryFile } = await outputsOf(
       { ...env, ALLOW_BULK_DELETE: 'True' },
       makeOutputFile()
     );
@@ -501,13 +585,14 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(existsSync(path.join(site, '_pages', 'about-renamed.md'))).toBe(false);
     expect(outputs.changed).toBe('true');
     expect(outputs.summary).toContain('1 deleted');
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('honors the legacy posts-only fallback (NOTION_DATABASE_ID)', async () => {
     const legacySite = makeSite();
     const legacyOut  = makeOutputFile();
 
-    const { result, outputs } = await outputsOf(
+    const { result, outputs, summaryFile } = await outputsOf(
       baseEnv(legacySite, {
         NOTION_PAGES_DATABASE_ID: '',
         NOTION_POSTS_DATABASE_ID: '',
@@ -523,6 +608,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(outputs.changed).toBe('true');
     expect(outputs.summary).toContain('posts: 1 created');
     expect(outputs.summary).not.toContain('pages:');
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
   });
 
   it('follows Notion pagination (has_more/next_cursor) across multiple pages of both database rows and block children', async () => {
@@ -540,7 +626,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
       paragraph('Block three.'),
     ]; // 3 blocks → 3 block-children pages
 
-    const { result, outputs } = await outputsOf(baseEnv(pagSite), pagOut);
+    const { result, outputs, summaryFile } = await outputsOf(baseEnv(pagSite), pagOut);
     expect(result.exitCode).toBe(0);
 
     expect(existsSync(path.join(pagSite, '_pages', 'about.md'))).toBe(true);
@@ -548,6 +634,7 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     expect(paginated).toContain('Block one.\n\nBlock two.\n\nBlock three.');
 
     expect(outputs.summary).toContain('pages: 2 created');
+    expect(readRunSummaryArtifact(summaryFile, 'synced')).toEqual(JSON.parse(outputs.summary));
 
     state.pages = [homeRow(), aboutRow()]; // restore shared fixture state
     delete state.blocks[PAGINATED_ID];
@@ -557,10 +644,12 @@ describe('local Action harness (fake Notion API + engine subprocess)', () => {
     resetFixtures();
     const localSite = makeSite();
 
-    const result = await runEngine(baseEnv(localSite));
+    const localEnv = baseEnv(localSite);
+    const result = await runEngine(localEnv);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('Sync complete.');
     expect(result.stdout).toContain('changed: true');
     expect(existsSync(path.join(localSite, '_pages', 'about.md'))).toBe(true);
+    readRunSummaryArtifact(localEnv.RUN_SUMMARY_FILE, 'synced');
   });
 });
