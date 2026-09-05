@@ -350,9 +350,9 @@ future dependency changes.
 
 ## Releasing
 
-Generated sites consume `uses: inkdrafts/notiongit-sync` pinned to an immutable
-full commit SHA (`@425b414ad8080ce2d309dfcac52c94f4557e21bd`, `# v2.0.0`), so a
-site's version moves only when the template bumps its pin. The `vX` major
+Generated sites consume `uses: inkdrafts/notiongit-sync`, pinned to an immutable
+full commit SHA (`inkdrafts/notiongit-sync@425b414ad8080ce2d309dfcac52c94f4557e21bd`, `# v2.0.0`),
+so a site's version moves only when the template bumps its pin. The `vX` major
 aliases still move on every release; consumers who prefer automatic updates can
 pin an alias instead, at their own risk, while full `vX.Y.Z` tags remain
 immutable once published. See [`RELEASING.md`](RELEASING.md) for the
