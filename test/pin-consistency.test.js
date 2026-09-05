@@ -1,7 +1,8 @@
 /**
  * Consistency contract for pinned actions: code and prose alike, every
  * tracked file must carry exactly one SHA and one version comment per
- * action. A failure means a pin bump was partial — fix the named straggler
+ * action, and no @<40-hex> pin may appear without its owner/repo prefix. A
+ * failure means a pin bump was partial — fix the named straggler
  * ("Bumping a pinned action" in RELEASING.md), never weaken this test.
  */
 import { describe, expect, it } from 'bun:test';
@@ -29,6 +30,18 @@ function pinOccurrences() {
           sha: match[2],
           version: line.slice(match.index + match[0].length).match(/v?\d+(?:\.\d+)+/)?.[0] ?? null,
         })),
+      ),
+  );
+}
+
+function bareHexOccurrences() {
+  return trackedFiles().flatMap((file) =>
+    readFileSync(path.join(REPO_ROOT, file), 'utf8')
+      .split('\n')
+      .flatMap((line, index) =>
+        [...line.matchAll(/@([0-9a-f]{40})(?![0-9a-f])/g)]
+          .filter((match) => !/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(line.slice(0, match.index)))
+          .map((match) => ({ file, lineNo: index + 1, sha: match[1] })),
       ),
   );
 }
@@ -69,6 +82,13 @@ describe('pin consistency: every tracked file', () => {
         }
       }
     }
+    expect(violations).toEqual([]);
+  });
+
+  it('never leaves a bare @<40-hex> pin without an owner/repo prefix', () => {
+    const violations = bareHexOccurrences().map(
+      ({ file, lineNo, sha }) => `${file}:${lineNo}: bare '@${sha}' has no owner/repo prefix`,
+    );
     expect(violations).toEqual([]);
   });
 });
